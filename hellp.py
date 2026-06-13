@@ -296,6 +296,7 @@ class EchoAgent(Agent):
         self._active_tasks: dict[str, asyncio.Task] = {}
         self._session_titles: dict[str, str] = {}
         self._session_modes: dict[str, str] = {}
+        self._active_session_id: str | None = None
         self._last_file_edits: dict[tuple[str, str], dict[str, str | None]] = {}
         self._last_terminal_ids: dict[str, str] = {}
 
@@ -436,7 +437,9 @@ class EchoAgent(Agent):
         async def view_file(path: str) -> str:
             """Reads and returns the contents of a file via the IDE."""
             try:
-                sid = current_session_id.get()
+                sid = agent_ref._active_session_id
+                if not sid:
+                    return f"Error: no active session for reading '{path}'"
                 resp = await agent_ref._conn.read_text_file(path=path, session_id=sid)
                 return resp.content
             except Exception as e:
@@ -445,7 +448,7 @@ class EchoAgent(Agent):
         async def create_file(path: str, content: str) -> str:
             """Creates a new file with the specified content via the IDE."""
             try:
-                sid = current_session_id.get()
+                sid = agent_ref._active_session_id
                 agent_ref._last_file_edits[(sid, path)] = {"old_text": None, "new_text": content}
                 await agent_ref._conn.write_text_file(content=content, path=path, session_id=sid)
                 return f"Successfully created file: {path}"
@@ -455,7 +458,7 @@ class EchoAgent(Agent):
         async def edit_file(path: str, content: str) -> str:
             """Overwrites an existing file with new content via the IDE."""
             try:
-                sid = current_session_id.get()
+                sid = agent_ref._active_session_id
                 old_text = None
                 try:
                     old_resp = await agent_ref._conn.read_text_file(path=path, session_id=sid)
@@ -471,7 +474,7 @@ class EchoAgent(Agent):
         async def run_command(command: str) -> str:
             """Runs a shell command in an IDE-managed terminal."""
             try:
-                sid = current_session_id.get()
+                sid = agent_ref._active_session_id
                 term_resp = await agent_ref._conn.create_terminal(command=command, session_id=sid)
                 terminal_id = term_resp.terminal_id
                 agent_ref._last_terminal_ids[sid] = terminal_id
@@ -632,6 +635,7 @@ class EchoAgent(Agent):
         last_plan_len = 0
 
         # Tool call start/completion is handled by MyPreToolCallDecideHook / MyPostToolCallHook
+        self._active_session_id = session_id
         token = current_session_id.set(session_id)
         try:
             response = await self._agent.chat(parts)

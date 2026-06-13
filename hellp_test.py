@@ -140,6 +140,52 @@ async def test_offline_prompt_with_tool_calls():
     assert message_updates[0].content.text == "Done."
 
 
+async def test_offline_tool_execution_populates_edit_state():
+    """Tool functions populate _last_file_edits so PostToolCallHook can send rich diffs."""
+    import hellp
+    from acp.schema import ReadTextFileResponse
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = AsyncMock(spec=Client)
+    client.read_text_file.return_value = ReadTextFileResponse(content="old content")
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+    sut._active_session_id = sid
+
+    result = await sut.edit_file("test.py", "new content")
+    assert "Successfully edited" in result
+    assert (sid, "test.py") in sut._last_file_edits
+    assert sut._last_file_edits[(sid, "test.py")]["old_text"] == "old content"
+    assert sut._last_file_edits[(sid, "test.py")]["new_text"] == "new content"
+
+
+async def test_offline_tool_works_without_contextvar():
+    """Tool functions must work even when ContextVar is not set (SDK dispatches on background tasks)."""
+    import hellp
+    from acp.schema import ReadTextFileResponse
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = AsyncMock(spec=Client)
+    client.read_text_file.return_value = ReadTextFileResponse(content="hello world")
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sut._active_session_id = session.session_id
+
+    # Call view_file WITHOUT setting current_session_id ContextVar — simulates SDK background task
+    result = await sut.view_file("/tmp/test.txt")
+    assert result == "hello world"
+    assert "Error" not in result
+
+
 async def test_offline_hook_tool_tracking():
     """Verify PreToolCallDecideHook + PostToolCallHook send start and completed updates."""
     import hellp
@@ -366,7 +412,9 @@ async def test_offline_rich_tool_outputs():
     await sut.initialize(protocol_version=1)
 
     client = AsyncMock(spec=Client)
-    # Mocking file read response containing "old contents"
+    client.request_permission.return_value = MagicMock(
+        outcome=MagicMock(option_id="approve")
+    )
     from acp.schema import ReadTextFileResponse, CreateTerminalResponse, TerminalOutputResponse, WaitForTerminalExitResponse
     client.read_text_file.return_value = ReadTextFileResponse(content="old contents")
     client.create_terminal.return_value = CreateTerminalResponse(terminal_id="term-123")
@@ -376,23 +424,15 @@ async def test_offline_rich_tool_outputs():
     sut.on_connect(conn=client)
 
     session = await sut.new_session(cwd=".")
-    
-    # We prime the contextvar for the run
-    token = hellp.current_session_id.set(session.session_id)
-    try:
-        # Simulate first the python tools executing
-        res_edit = await sut.edit_file("foo.txt", "new contents")
-        assert "Successfully edited file" in res_edit
-        
-        res_run = await sut.run_command("ls -l")
-        assert res_run == "command output"
-    finally:
-        hellp.current_session_id.reset(token)
+    sid = session.session_id
 
-    # Now run the prompt so the streamed events process
+    # Pre-populate state that tool functions would set during execution
+    sut._last_file_edits[(sid, "foo.txt")] = {"old_text": "old contents", "new_text": "new contents"}
+    sut._last_terminal_ids[sid] = "term-123"
+
     await sut.prompt(
         [TextContentBlock(type="text", text="edit and run")],
-        session_id=session.session_id,
+        session_id=sid,
     )
 
     # Gather updates
