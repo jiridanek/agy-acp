@@ -427,6 +427,7 @@ class MyPostToolCallHook(PostToolCallHook):
         status = "failed" if data.error else "completed"
         summary = str(data.error or data.result)[:2000]
         content = [tool_content(text_block(summary))]
+        raw_output = data.error or data.result
 
         try:
             view = self.echo_agent._tracker.view(tc_id)
@@ -440,6 +441,10 @@ class MyPostToolCallHook(PostToolCallHook):
                         old_text=edit_info["old_text"],
                     )]
             elif view.kind == "execute":
+                exit_code = self.echo_agent._last_exit_codes.pop(session_id, None)
+                if exit_code is not None and exit_code != 0:
+                    status = "failed"
+                    raw_output = {"exit_code": exit_code, "output": data.result}
                 terminal_id = self.echo_agent._last_terminal_ids.pop(session_id, None)
                 if terminal_id:
                     content = [tool_terminal_ref(terminal_id=terminal_id)]
@@ -449,7 +454,7 @@ class MyPostToolCallHook(PostToolCallHook):
         try:
             progress = self.echo_agent._tracker.progress(
                 tc_id, status=status, content=content,
-                raw_output=data.error or data.result)
+                raw_output=raw_output)
             await self.echo_agent._conn.session_update(
                 session_id=session_id, update=progress)
         except KeyError:
@@ -476,6 +481,7 @@ class EchoAgent(Agent):
         self._session_cumulative_cost: dict[str, float] = {}
         self._last_file_edits: dict[tuple[str, str], dict[str, str | None]] = {}
         self._last_terminal_ids: dict[str, str] = {}
+        self._last_exit_codes: dict[str, int] = {}
         self._client_capabilities: ClientCapabilities | None = None
 
     def on_connect(self, conn: Client) -> None:
@@ -499,6 +505,7 @@ class EchoAgent(Agent):
         self._session_cumulative_cost.pop(session_id, None)
         self._active_tasks.pop(session_id, None)
         self._last_terminal_ids.pop(session_id, None)
+        self._last_exit_codes.pop(session_id, None)
         for key in [k for k in self._last_file_edits if k[0] == session_id]:
             del self._last_file_edits[key]
         self._store.delete(session_id)
@@ -905,9 +912,12 @@ class EchoAgent(Agent):
                 term_resp = await agent_ref._conn.create_terminal(command=command, session_id=sid)
                 terminal_id = term_resp.terminal_id
                 agent_ref._last_terminal_ids[sid] = terminal_id
-                await agent_ref._conn.wait_for_terminal_exit(session_id=sid, terminal_id=terminal_id)
+                exit_resp = await agent_ref._conn.wait_for_terminal_exit(session_id=sid, terminal_id=terminal_id)
                 out_resp = await agent_ref._conn.terminal_output(session_id=sid, terminal_id=terminal_id)
                 await agent_ref._conn.release_terminal(session_id=sid, terminal_id=terminal_id)
+                exit_code = getattr(exit_resp, "exit_code", None)
+                if exit_code is not None:
+                    agent_ref._last_exit_codes[sid] = exit_code
                 return out_resp.output
             except Exception as e:
                 return f"Error: Failed to run command '{command}': {e}"

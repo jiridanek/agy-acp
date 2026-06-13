@@ -700,11 +700,11 @@ async def test_offline_rich_tool_outputs():
     starts = [u for u in updates if u.session_update == "tool_call"]
     progress = [u for u in updates if u.session_update == "tool_call_update"]
 
-    # Verify Kind/Location extraction
-    assert len(starts) == 2
+    # edit_file is auto-allowed → sends start notification
+    # run_command requires permission → no start notification (broker handles it)
+    assert len(starts) == 1
     assert starts[0].kind == "edit"
     assert starts[0].locations[0].path == "foo.txt"
-    assert starts[1].kind == "execute"
 
     # Verify Rich Tool Contents in updates
     assert len(progress) == 2
@@ -719,6 +719,47 @@ async def test_offline_rich_tool_outputs():
     assert term_update.status == "completed"
     assert term_update.content[0].type == "terminal"
     assert term_update.content[0].terminal_id == "term-123"
+
+
+async def test_offline_nonzero_exit_code_marks_failed():
+    """Non-zero exit code from run_command sets tool call status to 'failed'."""
+    import hellp
+
+    sut = hellp.EchoAgent(
+        agent_t=lambda cfg: FakeAgent(config=None, responses=[]),
+        agent_config_t=FakeConfig,
+    )
+    await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
+
+    client = AsyncMock(spec=Client)
+    sut.on_connect(conn=client)
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    # Simulate: run_command stored exit code 1 and terminal id
+    sut._last_exit_codes[sid] = 1
+    sut._last_terminal_ids[sid] = "term-fail"
+
+    # Register a tracker entry for the tool call
+    sut._tracker.start("tc-fail", title="run_command: false", kind="execute")
+
+    token = hellp.current_session_id.set(sid)
+    try:
+        from google.antigravity.hooks.hooks import OperationContext, TurnContext, SessionContext
+        op_ctx = OperationContext(TurnContext(SessionContext()))
+        op_ctx.set("acp_tc_id", "tc-fail")
+
+        post_hook = hellp.MyPostToolCallHook(sut)
+        tr = agy_types.ToolResult(id="tc-fail", name="run_command", result="")
+        await post_hook.run(op_ctx, tr)
+    finally:
+        hellp.current_session_id.reset(token)
+
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    progress = [u for u in updates if u.session_update == "tool_call_update"]
+    assert len(progress) == 1
+    assert progress[0].status == "failed"
+    assert progress[0].raw_output == {"exit_code": 1, "output": ""}
 
 
 async def test_offline_session_modes():
