@@ -229,6 +229,77 @@ def _parse_mcp_request_text(args: dict) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _discover_skills(cwd: str) -> list[AvailableCommand]:
+    """Scan for TOML custom commands and SKILL.md agent skills."""
+    import tomllib
+
+    commands: list[AvailableCommand] = []
+    search_dirs = [
+        (Path(cwd) / ".gemini" / "commands", "toml"),
+        (Path(cwd) / ".gemini" / "skills", "skill"),
+        (Path.home() / ".gemini" / "commands", "toml"),
+        (Path.home() / ".gemini" / "skills", "skill"),
+        (Path(cwd) / ".agents" / "skills", "skill"),
+        (Path.home() / ".agents" / "skills", "skill"),
+    ]
+
+    seen: set[str] = set()
+    for base_dir, fmt in search_dirs:
+        if not base_dir.is_dir():
+            continue
+        if fmt == "toml":
+            for toml_file in base_dir.rglob("*.toml"):
+                name = toml_file.relative_to(base_dir).with_suffix("").as_posix().replace("/", ":")
+                if name in seen:
+                    continue
+                seen.add(name)
+                desc = f"Custom command: {name}"
+                try:
+                    data = tomllib.loads(toml_file.read_text())
+                    if "description" in data:
+                        desc = data["description"]
+                except Exception:
+                    pass
+                commands.append(AvailableCommand(name=name, description=desc))
+        elif fmt == "skill":
+            for skill_dir in base_dir.iterdir():
+                if not skill_dir.is_dir():
+                    continue
+                skill_md = skill_dir / "SKILL.md"
+                if not skill_md.exists():
+                    continue
+                name = skill_dir.name
+                if name in seen:
+                    continue
+                seen.add(name)
+                desc = f"Skill: {name}"
+                try:
+                    text = skill_md.read_text()
+                    if text.startswith("---"):
+                        end = text.index("---", 3)
+                        for line in text[3:end].split("\n"):
+                            if line.strip().startswith("description:"):
+                                desc = line.split(":", 1)[1].strip().strip("\"'")
+                                break
+                except Exception:
+                    pass
+                commands.append(AvailableCommand(name=name, description=desc))
+
+    return commands
+
+
+def _skills_paths(cwd: str) -> list[str]:
+    """Return skill directory paths to pass to the SDK."""
+    return [
+        str(Path(cwd) / ".gemini" / "commands"),
+        str(Path(cwd) / ".gemini" / "skills"),
+        str(Path.home() / ".gemini" / "commands"),
+        str(Path.home() / ".gemini" / "skills"),
+        str(Path(cwd) / ".agents" / "skills"),
+        str(Path.home() / ".agents" / "skills"),
+    ]
+
+
 def _permission_description(name: str, args: Any) -> str:
     """Build a human-readable description of tool arguments for the permission dialog.
 
@@ -763,6 +834,7 @@ class EchoAgent(Agent):
                 workspaces=[getattr(self, "_cwd", ".")]
                 + self._session_additional_dirs.get(session_id, []),
                 mcp_servers=self._session_mcp_servers.get(session_id) or None,
+                skills_paths=_skills_paths(getattr(self, "_cwd", ".")),
             )
             new_agent = self._agent_t(config)
             new_agent.register_hook(MyPreToolCallDecideHook(self))
@@ -1117,10 +1189,12 @@ class EchoAgent(Agent):
         self.run_command = run_command
 
         disabled_tools, custom_tools = self._build_tools_config()
+        cwd = getattr(self, "_cwd", ".")
         config = self._agent_config_t(
             capabilities=agy_types.CapabilitiesConfig(disabled_tools=disabled_tools),
             policies=[agy_policy.allow_all()],
             tools=custom_tools,
+            skills_paths=_skills_paths(cwd),
             save_dir=_DEFAULT_SAVE_DIR,
         )
         self._agent = self._agent_t(config)
@@ -1244,6 +1318,7 @@ class EchoAgent(Agent):
                         name="help", description="Show available commands"
                     ),
                 ]
+                + _discover_skills(getattr(self, "_cwd", "."))
             ),
         )
 
