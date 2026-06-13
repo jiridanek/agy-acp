@@ -516,38 +516,46 @@ class EchoAgent(Agent):
         model_id = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
         thinking = self._session_thinking_levels.get(session_id, _DEFAULT_THINKING_LEVEL)
 
-        await self._agent.__aexit__(None, None, None)
+        old_agent = self._agent
+        await old_agent.__aexit__(None, None, None)
 
         from google.antigravity import types as agy_types
-        config = self._agent_config_t(
-            capabilities=agy_types.CapabilitiesConfig(
-                disabled_tools=[
-                    agy_types.BuiltinTools.VIEW_FILE,
-                    agy_types.BuiltinTools.CREATE_FILE,
-                    agy_types.BuiltinTools.EDIT_FILE,
-                    agy_types.BuiltinTools.RUN_COMMAND,
-                ]
-            ),
-            tools=[self.view_file, self.create_file, self.edit_file, self.run_command],
-            gemini_config=agy_types.GeminiConfig(
-                models=agy_types.ModelConfig(
-                    default=agy_types.ModelEntry(
-                        name=model_id,
-                        generation=agy_types.GenerationConfig(
-                            thinking_level=agy_types.ThinkingLevel(thinking),
+        try:
+            config = self._agent_config_t(
+                capabilities=agy_types.CapabilitiesConfig(
+                    disabled_tools=[
+                        agy_types.BuiltinTools.VIEW_FILE,
+                        agy_types.BuiltinTools.CREATE_FILE,
+                        agy_types.BuiltinTools.EDIT_FILE,
+                        agy_types.BuiltinTools.RUN_COMMAND,
+                    ]
+                ),
+                tools=[self.view_file, self.create_file, self.edit_file, self.run_command],
+                gemini_config=agy_types.GeminiConfig(
+                    models=agy_types.ModelConfig(
+                        default=agy_types.ModelEntry(
+                            name=model_id,
+                            generation=agy_types.GenerationConfig(
+                                thinking_level=agy_types.ThinkingLevel(thinking),
+                            ),
                         ),
                     ),
                 ),
-            ),
-            conversation_id=conversation_id,
-            save_dir=save_dir or _DEFAULT_SAVE_DIR,
-            workspaces=[getattr(self, "_cwd", ".")] + self._session_additional_dirs.get(session_id, []),
-            mcp_servers=self._session_mcp_servers.get(session_id) or None,
-        )
-        self._agent = self._agent_t(config)
-        self._agent.register_hook(MyPreToolCallDecideHook(self))
-        self._agent.register_hook(MyPostToolCallHook(self))
-        await self._agent.__aenter__()
+                conversation_id=conversation_id,
+                save_dir=save_dir or _DEFAULT_SAVE_DIR,
+                workspaces=[getattr(self, "_cwd", ".")] + self._session_additional_dirs.get(session_id, []),
+                mcp_servers=self._session_mcp_servers.get(session_id) or None,
+            )
+            new_agent = self._agent_t(config)
+            new_agent.register_hook(MyPreToolCallDecideHook(self))
+            new_agent.register_hook(MyPostToolCallHook(self))
+            await new_agent.__aenter__()
+            self._agent = new_agent
+        except Exception:
+            log.exception("_rebuild_agent failed, restoring previous agent")
+            await old_agent.__aenter__()
+            self._agent = old_agent
+            raise
         log.debug("rebuilt agent model=%s thinking=%s conv=%s", model_id, thinking, conversation_id)
 
     async def set_session_model(

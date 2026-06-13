@@ -942,6 +942,36 @@ async def test_offline_model_switch_preserves_conversation():
     assert configs_seen[-1].get("conversation_id") == "conv-keep-me-2"
 
 
+async def test_offline_rebuild_agent_rollback():
+    """If _rebuild_agent fails, the old agent is restored."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+    original_agent = sut._agent
+
+    call_count = 0
+    def failing_config_t(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise ValueError("config creation failed")
+
+    sut._agent_config_t = failing_config_t
+
+    with pytest.raises(ValueError, match="config creation failed"):
+        await sut.set_session_model(model_id="gemini-2.5-flash", session_id=sid)
+
+    # Agent should be restored to the original
+    assert sut._agent is original_agent
+
+
 async def test_offline_rebuild_uses_valid_local_agent_config():
     """_rebuild_agent must produce a valid LocalAgentConfig (no conflicting model fields)."""
     import hellp
