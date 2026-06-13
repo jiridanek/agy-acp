@@ -462,7 +462,7 @@ class EchoAgent(Agent):
             ),
             SessionConfigOptionSelect(
                 id="thinking_level", name="Thinking Level", type="select",
-                description="Controls depth of reasoning",
+                description="Controls depth of reasoning (3.x models only, ignored for 2.x)",
                 category="model",
                 current_value=current_thinking,
                 options=[
@@ -546,7 +546,8 @@ class EchoAgent(Agent):
                         default=agy_types.ModelEntry(
                             name=model_id,
                             generation=agy_types.GenerationConfig(
-                                thinking_level=agy_types.ThinkingLevel(thinking),
+                                # 2.5 models don't support thinking level
+                                thinking_level=agy_types.ThinkingLevel(thinking) if not model_id.startswith("gemini-2.") else None,
                             ),
                         ),
                     ),
