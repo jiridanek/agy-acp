@@ -359,6 +359,40 @@ async def test_offline_rich_tool_outputs():
     assert term_update.content[0].terminal_id == "term-123"
 
 
+async def test_offline_session_modes():
+    """Verify session modes are declared and set_session_mode works."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[
+        [agy_types.Text(step_index=0, text="plan step 1")],
+    ])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    assert session.modes is not None
+    assert session.modes.current_mode_id == "agent"
+    assert len(session.modes.available_modes) == 2
+
+    await sut.set_session_mode(mode_id="plan", session_id=sid)
+
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    mode_updates = [u for u in updates if u.session_update == "current_mode_update"]
+    assert len(mode_updates) == 1
+    assert mode_updates[0].current_mode_id == "plan"
+
+    reply = await sut.prompt(
+        [TextContentBlock(type="text", text="do something")],
+        session_id=sid,
+    )
+    assert reply.stop_reason == "end_turn"
+
+
 async def test_offline_usage_tracking():
     """Verify usage metadata from the response is included in PromptResponse."""
     import hellp

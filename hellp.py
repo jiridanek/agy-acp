@@ -47,9 +47,10 @@ from acp.schema import (
     TextContentBlock,
     TextResourceContents,
     AgentCapabilities, AvailableCommand, CloseSessionResponse,
-    PromptCapabilities, SessionInfoUpdate, Usage,
-    SessionConfigOptionSelect,
-    SessionConfigSelectGroup, SessionConfigSelectOption,
+    CurrentModeUpdate, PromptCapabilities, SessionInfoUpdate,
+    SessionConfigOptionSelect, SessionConfigSelectOption,
+    SessionMode, SessionModeState, SetSessionConfigOptionResponse,
+    SetSessionModeResponse, Usage,
     SessionCapabilities, SessionCloseCapabilities,
     RequestPermissionRequest, RequestPermissionResponse,
     UsageUpdate, ToolCallUpdate, ToolCallLocation,
@@ -179,6 +180,7 @@ class EchoAgent(Agent):
         self._agent_config_t = agent_config_t
         self._active_tasks: dict[str, asyncio.Task] = {}
         self._session_titled: set[str] = set()
+        self._session_modes: dict[str, str] = {}
         self._last_file_edits: dict[tuple[str, str], dict[str, str | None]] = {}
         self._last_terminal_ids: dict[str, str] = {}
 
@@ -195,10 +197,54 @@ class EchoAgent(Agent):
     async def close_session(self, session_id: str, **kwargs: Any) -> CloseSessionResponse:
         await self._agent.__aexit__(None, None, None)
         self._session_titled.discard(session_id)
+        self._session_modes.pop(session_id, None)
         self._last_terminal_ids.pop(session_id, None)
         for key in [k for k in self._last_file_edits if k[0] == session_id]:
             del self._last_file_edits[key]
         return CloseSessionResponse()
+
+    async def set_session_mode(self, mode_id: str, session_id: str, **kwargs: Any) -> SetSessionModeResponse:
+        log.debug("set_session_mode mode=%s session=%s", mode_id, session_id)
+        self._session_modes[session_id] = mode_id
+        await self._conn.session_update(
+            session_id=session_id,
+            update=CurrentModeUpdate(
+                session_update="current_mode_update",
+                current_mode_id=mode_id,
+            ),
+        )
+        return SetSessionModeResponse()
+
+    def _build_config_options(self, session_id: str) -> list[SessionConfigOptionSelect]:
+        current_mode = self._session_modes.get(session_id, "agent")
+        return [
+            SessionConfigOptionSelect(
+                id="mode", name="Mode", type="select",
+                description="Controls agent behavior",
+                category="mode",
+                current_value=current_mode,
+                options=[
+                    SessionConfigSelectOption(value="agent", name="Agent", description="Execute tools autonomously"),
+                    SessionConfigSelectOption(value="plan", name="Plan", description="Produce a plan without executing tools"),
+                ],
+            ),
+        ]
+
+    # https://agentclientprotocol.com/protocol/v1/session-config-options
+    async def set_config_option(
+        self, config_id: str, session_id: str, value: str | bool, **kwargs: Any,
+    ) -> SetSessionConfigOptionResponse:
+        log.debug("set_config_option config_id=%s value=%s session=%s", config_id, value, session_id)
+        if config_id == "mode" and isinstance(value, str):
+            self._session_modes[session_id] = value
+            await self._conn.session_update(
+                session_id=session_id,
+                update=CurrentModeUpdate(
+                    session_update="current_mode_update",
+                    current_mode_id=value,
+                ),
+            )
+        return SetSessionConfigOptionResponse(config_options=self._build_config_options(session_id))
 
     async def initialize(
         self,
@@ -317,25 +363,21 @@ class EchoAgent(Agent):
         if hasattr(self._agent, "_config") and hasattr(self._agent._config, "workspaces"):
             self._agent._config.workspaces = [cwd]
 
+        self._session_modes[session_id] = "agent"
         asyncio.ensure_future(self._send_available_commands(session_id))
 
         return NewSessionResponse(
             session_id=session_id,
-            config_options=[
-                SessionConfigOptionSelect(id="agent", name="Agent", description="Agenting",
-                                          current_value="Agent",
-                                          options=[
-                                              SessionConfigSelectGroup(
-                                                  group="agent", name="Agent", options=[
-                                                      SessionConfigSelectOption(
-                                                          description="Agent", name="Agent", value="agent",
-                                                      ),
-                                                      SessionConfigSelectOption(
-                                                          description="Plan", name="Plan", value="plan",
-                                                      ),
-                                                  ]
-                                              )],
-            type="select")])
+            # Provide both modes (legacy) and configOptions (preferred) per ACP spec
+            modes=SessionModeState(
+                current_mode_id="agent",
+                available_modes=[
+                    SessionMode(id="agent", name="Agent", description="Execute tools autonomously"),
+                    SessionMode(id="plan", name="Plan", description="Produce a plan without executing tools"),
+                ],
+            ),
+            config_options=self._build_config_options(session_id),
+        )
 
     async def _send_available_commands(self, session_id: str) -> None:
         await self._conn.session_update(
@@ -392,6 +434,9 @@ class EchoAgent(Agent):
         if not parts:
             log.debug("no content to send")
             return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
+
+        if self._session_modes.get(session_id) == "plan":
+            parts.append("\n[PLAN MODE: Produce a step-by-step plan. Do not execute any tools.]")
 
         if session_id not in self._session_titled:
             self._session_titled.add(session_id)
