@@ -106,10 +106,14 @@ _MODEL_PRICING: dict[str, tuple[float, float]] = {
 # Pro models: input 2x, output 1.5x when context exceeds 200k tokens
 _LONG_CONTEXT_THRESHOLD = 200_000
 
+# google.antigravity.types.BuiltinTools enum values
 _AUTO_ALLOW_TOOLS = {
-    "view_file", "create_file", "edit_file",
-    "list_directory", "find_file", "search_directory",
-    "ask_question", "finish", "start_subagent", "generate_image",
+    "view_file", "create_file", "edit_file",       # file I/O — routed through IDE RPCs
+    "list_directory", "find_file", "search_directory",  # read-only filesystem
+    "ask_question", "finish",                       # agent lifecycle
+    "start_subagent", "generate_image",             # SDK orchestration / content gen
+    # NOT included: "run_command" — requires IDE permission
+    # NOT included: "mcp_*" — MCP server tools require permission
 }
 
 
