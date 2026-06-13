@@ -347,6 +347,7 @@ class EchoAgent(Agent):
 
     def _build_config_options(self, session_id: str) -> list[SessionConfigOptionSelect]:
         current_mode = self._session_modes.get(session_id, "agent")
+        current_model = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
         return [
             SessionConfigOptionSelect(
                 id="mode", name="Mode", type="select",
@@ -356,6 +357,16 @@ class EchoAgent(Agent):
                 options=[
                     SessionConfigSelectOption(value="agent", name="Agent", description="Execute tools autonomously"),
                     SessionConfigSelectOption(value="plan", name="Plan", description="Produce a plan without executing tools"),
+                ],
+            ),
+            SessionConfigOptionSelect(
+                id="model", name="Model", type="select",
+                description="Gemini model to use",
+                category="model",
+                current_value=current_model,
+                options=[
+                    SessionConfigSelectOption(value=m.model_id, name=m.name, description=m.description)
+                    for m in _AVAILABLE_MODELS
                 ],
             ),
         ]
@@ -374,6 +385,8 @@ class EchoAgent(Agent):
                     current_mode_id=value,
                 ),
             )
+        elif config_id == "model" and isinstance(value, str):
+            self._session_models[session_id] = value
         return SetSessionConfigOptionResponse(config_options=self._build_config_options(session_id))
 
     async def authenticate(self, method_id: str, **kwargs: Any) -> AuthenticateResponse | None:

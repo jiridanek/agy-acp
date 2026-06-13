@@ -516,6 +516,30 @@ async def test_offline_session_modes():
     assert reply.stop_reason == "end_turn"
 
 
+async def test_offline_config_option_model():
+    """set_config_option with config_id='model' updates the session model."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    # Config options include model
+    assert any(opt.id == "model" for opt in session.config_options)
+
+    resp = await sut.set_config_option(config_id="model", session_id=sid, value="gemini-2.5-flash")
+    assert sut._session_models[sid] == "gemini-2.5-flash"
+
+    model_opt = next(o for o in resp.config_options if o.id == "model")
+    assert model_opt.current_value == "gemini-2.5-flash"
+
+
 async def test_offline_session_persistence(tmp_path):
     """new_session → prompt → list_sessions finds it → close_session → list_sessions doesn't."""
     import hellp
