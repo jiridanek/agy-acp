@@ -64,7 +64,7 @@ from acp.schema import (
     SessionModelState,
     SetSessionConfigOptionResponse, SetSessionModeResponse,
     SetSessionModelResponse, Usage,
-    Cost, ForkSessionResponse, ResumeSessionResponse,
+    ConfigOptionUpdate, Cost, ForkSessionResponse, ResumeSessionResponse,
     SessionAdditionalDirectoriesCapabilities,
     SessionCapabilities, SessionCloseCapabilities,
     SessionForkCapabilities, SessionResumeCapabilities,
@@ -492,7 +492,15 @@ class EchoAgent(Agent):
         elif config_id == "thinking_level" and isinstance(value, str):
             self._session_thinking_levels[session_id] = value
             await self._rebuild_agent(session_id, conversation_id=getattr(self._agent, "conversation_id", None))
-        return SetSessionConfigOptionResponse(config_options=self._build_config_options(session_id))
+        updated = self._build_config_options(session_id)
+        await self._conn.session_update(
+            session_id=session_id,
+            update=ConfigOptionUpdate(
+                session_update="config_option_update",
+                config_options=updated,
+            ),
+        )
+        return SetSessionConfigOptionResponse(config_options=updated)
 
     async def authenticate(self, method_id: str, **kwargs: Any) -> AuthenticateResponse | None:
         log.debug("authenticate method_id=%s", method_id)
@@ -1023,6 +1031,12 @@ class EchoAgent(Agent):
             log.debug("prompt cancelled for session %s", session_id)
             if response is not None and hasattr(response, "cancel"):
                 await response.cancel()
+            terminal_id = self._last_terminal_ids.pop(session_id, None)
+            if terminal_id:
+                try:
+                    await self._conn.release_terminal(session_id=session_id, terminal_id=terminal_id)
+                except Exception:
+                    log.debug("failed to release terminal %s on cancel", terminal_id)
             stop_reason = "cancelled"
         except Exception as e:
             log.exception("error during agent chat")
@@ -1031,6 +1045,7 @@ class EchoAgent(Agent):
                 update=update_agent_message(text_block(f"Error: {e}")))
         finally:
             current_session_id.reset(token)
+            self._active_session_id = None
             self._active_tasks.pop(session_id, None)
 
         usage = None
@@ -1068,7 +1083,7 @@ class EchoAgent(Agent):
                         ),
                     )
         except Exception:
-            pass
+            log.debug("usage extraction failed", exc_info=True)
 
         self._store.save(session_id, {
             "session_id": session_id,
