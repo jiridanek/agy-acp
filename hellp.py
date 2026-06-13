@@ -733,7 +733,7 @@ class EchoAgent(Agent):
         await self._conn.session_update(
             session_id=session_id,
             update=update_available_commands([
-                AvailableCommand(name="/reset", description="Clear conversation history"),
+                AvailableCommand(name="reset", description="Clear conversation history"),
             ]),
         )
 
@@ -786,7 +786,7 @@ class EchoAgent(Agent):
             return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
 
         first_text = next((p for p in parts if isinstance(p, str)), "")
-        if first_text.strip() == "/reset":
+        if first_text.strip() in ("/reset", "reset"):
             log.debug("reset command for session %s", session_id)
             await self._agent.__aexit__(None, None, None)
             await self._rebuild_agent(session_id)
