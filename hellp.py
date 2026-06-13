@@ -1,11 +1,14 @@
 import asyncio
 import base64
+import logging
 from typing import Any
 from uuid import uuid4
 
 import google.antigravity as agy
 
-f = open("file.log", 'at')
+log = logging.getLogger(__name__)
+log.addHandler(logging.FileHandler("file.log"))
+log.setLevel(logging.DEBUG)
 
 from acp import (
     Agent,
@@ -45,12 +48,12 @@ class EchoAgent(Agent):
         self._agent_config_t = agent_config_t
 
     def on_connect(self, conn: Client) -> None:
-        print("on_connect", file=f)
+        log.debug("on_connect")
         self._conn = conn
 
-    async def close_session(self, session_id: str, **kwargs: Any) -> CloseSessionResponse | None:
+    async def close_session(self, session_id: str, **kwargs: Any) -> CloseSessionResponse:
         await self._agent.__aexit__(None, None, None)
-        # return self._agent.close_session(session_id, **kwargs)
+        return CloseSessionResponse()
 
     async def initialize(
         self,
@@ -59,14 +62,14 @@ class EchoAgent(Agent):
         client_info: Implementation | None = None,
         **kwargs: Any,
     ) -> InitializeResponse:
-        print("initialize", file=f)
+        log.debug("initialize")
 
         config = self._agent_config_t()
         self._agent = self._agent_t(config)
 
         await self._agent.__aenter__()
 
-        print("initialized", file=f)
+        log.debug("initialized")
 
         return InitializeResponse(
             protocol_version=protocol_version,
@@ -80,6 +83,7 @@ class EchoAgent(Agent):
         mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
         **kwargs: Any,
     ) -> NewSessionResponse:
+        self._cwd = cwd
         return NewSessionResponse(
             session_id=uuid4().hex,
             config_options=[
@@ -113,7 +117,7 @@ class EchoAgent(Agent):
         message_id: str | None = None,
         **kwargs: Any,
     ) -> PromptResponse:
-        print(f"prompt called, blocks={len(prompt)}, session_id={session_id}", file=f, flush=True)
+        log.debug("prompt called, blocks=%d, session_id=%s", len(prompt), session_id)
 
         parts: list[agy.types.ContentPrimitive] = []
         for block in prompt:
@@ -142,13 +146,13 @@ class EchoAgent(Agent):
                 case ResourceContentBlock(uri=uri, name=name):
                     parts.append(f"[Attached resource: {name}]({uri})")
                 case _:
-                    print(f"skipping unknown block: {type(block)}", file=f, flush=True)
+                    log.debug("skipping unknown block: %s", type(block))
 
         if not parts:
-            print("no content to send", file=f, flush=True)
+            log.debug("no content to send")
             return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
 
-        print(f"calling agent.chat with {len(parts)} parts", file=f, flush=True)
+        log.debug("calling agent.chat with %d parts", len(parts))
         tracker = ToolCallTracker()
         text_acc: list[str] = []
         try:
@@ -180,16 +184,16 @@ class EchoAgent(Agent):
                             await self._conn.session_update(
                                 session_id=session_id, update=progress)
                         except KeyError:
-                            print(f"tool result for unknown call {tc_id}", file=f, flush=True)
+                            log.debug("tool result for unknown call %s", tc_id)
                     case _:
-                        print(f"unhandled chunk type: {type(chunk)}", file=f, flush=True)
+                        log.debug("unhandled chunk type: %s", type(chunk))
         except Exception as e:
-            print(f"error during agent chat: {e}", file=f, flush=True)
+            log.exception("error during agent chat")
             await self._conn.session_update(
                 session_id=session_id,
                 update=update_agent_message(text_block(f"Error: {e}")))
 
-        print("returning PromptResponse", file=f, flush=True)
+        log.debug("returning PromptResponse")
         return PromptResponse(
             user_message_id=message_id,
             stop_reason="end_turn"
