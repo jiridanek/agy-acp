@@ -137,6 +137,14 @@ _MODEL_PRICING: dict[str, tuple[float, float]] = {
 # Pro models: input 2x, output 1.5x when context exceeds 200k tokens
 _LONG_CONTEXT_THRESHOLD = 200_000
 
+_CONTEXT_PRESETS: dict[str, int] = {
+    "compact": 25_000,
+    "normal": 50_000,
+    "extended": 200_000,
+    "max": 1_000_000,
+}
+_DEFAULT_CONTEXT = "normal"
+
 from google.antigravity.types import BuiltinTools
 
 # All SDK built-in tools except RUN_COMMAND auto-allow.
@@ -615,6 +623,7 @@ class EchoAgent(Agent):
         self._active_session_id: str | None = None
         self._session_models: dict[str, str] = {}
         self._session_thinking_levels: dict[str, str] = {}
+        self._session_context_levels: dict[str, str] = {}
         self._session_additional_dirs: dict[str, list[str]] = {}
         self._session_mcp_servers: dict[str, list] = {}
         self._session_cumulative_cost: dict[str, float] = {}
@@ -651,6 +660,7 @@ class EchoAgent(Agent):
         self._session_modes.pop(session_id, None)
         self._session_models.pop(session_id, None)
         self._session_thinking_levels.pop(session_id, None)
+        self._session_context_levels.pop(session_id, None)
         self._session_additional_dirs.pop(session_id, None)
         self._session_mcp_servers.pop(session_id, None)
         self._session_cumulative_cost.pop(session_id, None)
@@ -683,6 +693,7 @@ class EchoAgent(Agent):
         current_thinking = self._session_thinking_levels.get(
             session_id, _DEFAULT_THINKING_LEVEL
         )
+        current_context = self._session_context_levels.get(session_id, _DEFAULT_CONTEXT)
         return [
             SessionConfigOptionSelect(
                 id="mode",
@@ -728,6 +739,22 @@ class EchoAgent(Agent):
                     for lvl in _THINKING_LEVELS
                 ],
             ),
+            SessionConfigOptionSelect(
+                id="context",
+                name="Context",
+                type="select",
+                description="Conversation history retained before compacting",
+                category="model",
+                current_value=current_context,
+                options=[
+                    SessionConfigSelectOption(
+                        value=k,
+                        name=k.capitalize(),
+                        description=f"{v:,} tokens",
+                    )
+                    for k, v in _CONTEXT_PRESETS.items()
+                ],
+            ),
         ]
 
     # https://agentclientprotocol.com/protocol/v1/session-config-options
@@ -761,6 +788,12 @@ class EchoAgent(Agent):
             )
         elif config_id == "thinking_level" and isinstance(value, str):
             self._session_thinking_levels[session_id] = value
+            await self._rebuild_agent(
+                session_id,
+                conversation_id=getattr(self._agent, "conversation_id", None),
+            )
+        elif config_id == "context" and isinstance(value, str):
+            self._session_context_levels[session_id] = value
             await self._rebuild_agent(
                 session_id,
                 conversation_id=getattr(self._agent, "conversation_id", None),
@@ -803,6 +836,8 @@ class EchoAgent(Agent):
         thinking = self._session_thinking_levels.get(
             session_id, _DEFAULT_THINKING_LEVEL
         )
+        context_level = self._session_context_levels.get(session_id, _DEFAULT_CONTEXT)
+        compaction_threshold = _CONTEXT_PRESETS.get(context_level, 50_000)
 
         old_agent = self._agent
         await old_agent.__aexit__(None, None, None)
@@ -813,7 +848,8 @@ class EchoAgent(Agent):
             enabled_tools, custom_tools = self._build_tools_config()
             config = self._agent_config_t(
                 capabilities=agy_types.CapabilitiesConfig(
-                    enabled_tools=enabled_tools
+                    enabled_tools=enabled_tools,
+                    compaction_threshold=compaction_threshold,
                 ),
                 policies=[agy_policy.allow_all()],
                 tools=custom_tools,
@@ -1283,6 +1319,7 @@ class EchoAgent(Agent):
         self._session_modes[session_id] = "agent"
         self._session_models[session_id] = _DEFAULT_MODEL_ID
         self._session_thinking_levels[session_id] = _DEFAULT_THINKING_LEVEL
+        self._session_context_levels[session_id] = _DEFAULT_CONTEXT
         self._session_additional_dirs[session_id] = additional_directories or []
         converted = _convert_mcp_servers(mcp_servers)
         if converted:
@@ -1325,6 +1362,9 @@ class EchoAgent(Agent):
                     AvailableCommand(name="usage", description="Show token usage"),
                     AvailableCommand(name="model", description="Show or switch model"),
                     AvailableCommand(
+                        name="context", description="Show or set context retention level"
+                    ),
+                    AvailableCommand(
                         name="thinking", description="Show or switch thinking level"
                     ),
                     AvailableCommand(
@@ -1364,7 +1404,8 @@ class EchoAgent(Agent):
                 "- `/usage` — Show token usage from last turn\n"
                 "- `/model [id]` — Show or switch model\n"
                 "- `/thinking [level]` — Show or switch thinking level\n"
-                "- `/compact` — Summarize conversation and start fresh context\n"
+                "- `/context [level]` — Show or set context retention (compact/normal/extended/max)\n"
+                "- `/compact` — Info about automatic compaction\n"
                 "- `/help` — Show this message"
             )
 
@@ -1418,8 +1459,30 @@ class EchoAgent(Agent):
             )
             return f"Current: **{current}**\nAvailable: {', '.join(_THINKING_LEVELS)}"
 
+        if name == "context":
+            if arg:
+                if arg not in _CONTEXT_PRESETS:
+                    return f"Unknown level `{arg}`. Available: {', '.join(_CONTEXT_PRESETS)}"
+                if self._is_intellij:
+                    self._session_context_levels[session_id] = arg
+                    await self._rebuild_agent(
+                        session_id,
+                        conversation_id=getattr(self._agent, "conversation_id", None),
+                    )
+                else:
+                    await self.set_config_option(
+                        config_id="context", session_id=session_id, value=arg
+                    )
+                return f"Context set to **{arg}** ({_CONTEXT_PRESETS[arg]:,} tokens)."
+            current = self._session_context_levels.get(session_id, _DEFAULT_CONTEXT)
+            levels = ", ".join(
+                f"**{k}** ({v:,})" if k == current else f"{k} ({v:,})"
+                for k, v in _CONTEXT_PRESETS.items()
+            )
+            return f"Current: **{current}** ({_CONTEXT_PRESETS[current]:,} tokens)\n{levels}"
+
         if name == "compact":
-            return "Compaction is handled automatically by the SDK when context exceeds the threshold. Use `/reset` to start fresh."
+            return "Compaction is automatic. Use `/context` to change the threshold, or `/reset` to start fresh."
 
         return None
 

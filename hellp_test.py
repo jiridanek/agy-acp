@@ -1801,6 +1801,39 @@ async def test_offline_thinking_command():
     assert sut._session_thinking_levels[sid] == "high"
 
 
+async def test_offline_context_command():
+    """/context shows and sets context retention level."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    # Show current
+    reply = await sut.prompt(
+        [TextContentBlock(type="text", text="/context")], session_id=sid
+    )
+    updates = [
+        call.kwargs.get("update") or call.args[1]
+        for call in client.session_update.call_args_list
+    ]
+    msg = [u for u in updates if u.session_update == "agent_message_chunk"][0].content.text
+    assert "normal" in msg
+    assert "50,000" in msg
+
+    # Set to max
+    reply = await sut.prompt(
+        [TextContentBlock(type="text", text="/context max")], session_id=sid
+    )
+    assert sut._session_context_levels[sid] == "max"
+
+
 async def test_offline_clear_is_reset_alias():
     """/clear works the same as /reset."""
     import hellp
