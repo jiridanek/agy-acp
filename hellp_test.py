@@ -2064,6 +2064,35 @@ async def test_offline_resume_session_not_found(tmp_path):
 # --- Live tests (require GEMINI_API_KEY) ---
 
 
+async def test_live_skill_magic_word():
+    """E2E: /magic-word skill triggers agent to say 'vlak'."""
+    import hellp
+
+    sut = hellp.EchoAgent(agent_t=agy.Agent, agent_config_t=agy.LocalAgentConfig)
+    await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
+
+    client = AsyncMock(spec=Client)
+    client.request_permission.return_value = MagicMock(
+        outcome=MagicMock(option_id="approve")
+    )
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    reply = await sut.prompt(
+        [TextContentBlock(type="text", text="/magic-word")],
+        session_id=session.session_id,
+    )
+    assert reply.stop_reason == "end_turn"
+
+    updates = [
+        call.kwargs.get("update") or call.args[1]
+        for call in client.session_update.call_args_list
+    ]
+    message_updates = [u for u in updates if u.session_update == "agent_message_chunk"]
+    combined = "".join(u.content.text for u in message_updates).lower()
+    assert "vlak" in combined, f"Expected 'vlak' in response, got: {combined[:200]}"
+
+
 async def test_initializes():
     import hellp
 
