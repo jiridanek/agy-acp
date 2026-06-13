@@ -29,6 +29,7 @@ from acp import (
 )
 from acp.helpers import (
     update_available_commands,
+    tool_content,
     tool_diff_content,
     tool_terminal_ref,
     update_plan,
@@ -99,6 +100,33 @@ class SessionStore:
         data = self._read()
         data.pop(session_id, None)
         self._write(data)
+
+
+def _tool_title(name: str, args: Any) -> str:
+    n = str(name)
+    if isinstance(args, dict):
+        for key in ("path", "command", "query", "pattern", "directory"):
+            if key in args:
+                return f"{n}: {args[key]}"
+    return n
+
+
+def _tool_kind(name: str) -> str:
+    n = str(name).lower()
+    if "read" in n or "view" in n or "list" in n:
+        return "read"
+    if "find" in n or "search" in n or "grep" in n:
+        return "search"
+    if "create" in n or "write" in n or "edit" in n:
+        return "edit"
+    if "delete" in n or "remove" in n:
+        return "delete"
+    if "move" in n or "rename" in n:
+        return "move"
+    if "run" in n or "execute" in n or "command" in n:
+        return "execute"
+    return "other"
+
 
 _PLAN_LINE_RE = re.compile(
     r"^\s*(?:"
@@ -586,25 +614,17 @@ class EchoAgent(Agent):
                             update=update_agent_message(text_block(t)))
                     case agy.types.ToolCall(name=name, id=tc_id, args=args):
                         tc_id = tc_id or uuid4().hex
-                        tool_name = str(name).lower()
-                        
-                        kind = "execute"
+                        kind = _tool_kind(str(name))
                         locations = None
-                        
-                        if "read" in tool_name or "view" in tool_name:
-                            kind = "read"
-                        elif "create" in tool_name or "write" in tool_name or "edit" in tool_name:
-                            kind = "edit"
-                            
                         if isinstance(args, dict) and "path" in args:
                             locations = [ToolCallLocation(path=args["path"])]
-                            
+
                         start = tracker.start(
                             tc_id,
-                            title=str(name),
+                            title=_tool_title(str(name), args),
                             kind=kind,
                             locations=locations,
-                            raw_input=args
+                            raw_input=args,
                         )
                         await self._conn.session_update(
                             session_id=session_id, update=start)
@@ -613,7 +633,7 @@ class EchoAgent(Agent):
                         
                         content = None
                         status = "failed" if err else "completed"
-                        
+
                         try:
                             view = tracker.view(tc_id)
                             if view.kind == "edit" and isinstance(view.raw_input, dict):
@@ -624,7 +644,7 @@ class EchoAgent(Agent):
                                         content = [tool_diff_content(
                                             path=path,
                                             new_text=edit_info["new_text"],
-                                            old_text=edit_info["old_text"]
+                                            old_text=edit_info["old_text"],
                                         )]
                                         self._last_file_edits.pop((session_id, path), None)
                             elif view.kind == "execute":
@@ -633,7 +653,11 @@ class EchoAgent(Agent):
                                     content = [tool_terminal_ref(terminal_id=terminal_id)]
                                     self._last_terminal_ids.pop(session_id, None)
                         except KeyError:
-                            log.debug("tool result view query failed for %s", tc_id)
+                            pass
+
+                        if content is None:
+                            summary = str(err or result)[:2000]
+                            content = [tool_content(text_block(summary))]
 
                         try:
                             progress = tracker.progress(

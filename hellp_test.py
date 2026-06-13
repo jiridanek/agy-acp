@@ -116,7 +116,7 @@ async def test_offline_prompt_with_tool_calls():
     tool_starts = [u for u in updates if u.session_update == "tool_call"]
     tool_progress = [u for u in updates if u.session_update == "tool_call_update"]
     assert len(tool_starts) == 1
-    assert tool_starts[0].title == "read_file"
+    assert tool_starts[0].title == "read_file: foo.py"
     assert tool_starts[0].raw_input == {"path": "foo.py"}
     assert len(tool_progress) == 1
     assert tool_progress[0].status == "completed"
