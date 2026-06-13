@@ -656,6 +656,39 @@ class SimpleClient(Client):
         print("update:", session_id, update)
 
 
+async def test_subprocess_fake_tool_call():
+    """Full subprocess test: fake LLM issues view_file, RPC round-trips to client."""
+    from acp.schema import ReadTextFileResponse
+
+    script = Path("fake_server.py")
+    env = os.environ.copy()
+    received_updates = []
+
+    class ToolTestClient(Client):
+        async def read_text_file(self, path, session_id, **kwargs):
+            return ReadTextFileResponse(content=f"content of {path}")
+
+        async def session_update(self, session_id, update, **kwargs):
+            received_updates.append(update)
+
+        async def request_permission(self, options, session_id, tool_call, **kwargs):
+            return {"outcome": {"optionId": "approve"}}
+
+    async with spawn_agent_process(ToolTestClient(), sys.executable, str(script), env=env) as (conn, _proc):
+        await conn.initialize(protocol_version=PROTOCOL_VERSION)
+        session = await conn.new_session(cwd=".", mcp_servers=[])
+        await conn.prompt(
+            session_id=session.session_id,
+            prompt=[text_block("read a file")],
+            message_id=str(uuid4()),
+        )
+
+    message_updates = [u for u in received_updates if getattr(u, "session_update", None) == "agent_message_chunk"]
+    assert len(message_updates) > 0
+    combined = "".join(u.content.text for u in message_updates)
+    assert "content of /tmp/fake_test_file.txt" in combined
+
+
 async def test_live_run():
     script = Path("hellp.py")
     env = os.environ.copy()
