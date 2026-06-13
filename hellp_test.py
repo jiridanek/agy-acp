@@ -1008,9 +1008,11 @@ async def test_offline_close_session_cleans_model():
     session = await sut.new_session(cwd=".")
     sid = session.session_id
     assert sid in sut._session_models
+    sut._active_tasks[sid] = asyncio.current_task()
 
     await sut.close_session(session_id=sid)
     assert sid not in sut._session_models
+    assert sid not in sut._active_tasks
 
 
 async def test_offline_reset_command():

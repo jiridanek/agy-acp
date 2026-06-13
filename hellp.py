@@ -414,6 +414,7 @@ class EchoAgent(Agent):
         self._session_additional_dirs.pop(session_id, None)
         self._session_mcp_servers.pop(session_id, None)
         self._session_cumulative_cost.pop(session_id, None)
+        self._active_tasks.pop(session_id, None)
         self._last_terminal_ids.pop(session_id, None)
         for key in [k for k in self._last_file_edits if k[0] == session_id]:
             del self._last_file_edits[key]
