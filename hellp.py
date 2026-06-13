@@ -1,4 +1,5 @@
 import asyncio
+import base64
 from typing import Any
 from uuid import uuid4
 
@@ -15,9 +16,11 @@ from acp import (
     text_block,
     update_agent_message, update_agent_thought_text,
 )
+from acp.contrib.tool_calls import ToolCallTracker
 from acp.interfaces import Client
 from acp.schema import (
     AudioContentBlock,
+    BlobResourceContents,
     ClientCapabilities,
     EmbeddedResourceContentBlock,
     HttpMcpServer,
@@ -26,7 +29,9 @@ from acp.schema import (
     McpServerStdio,
     ResourceContentBlock,
     SseMcpServer,
-    TextContentBlock, AgentCapabilities, CloseSessionResponse, SessionModeState, SessionMode, SessionConfigOptionSelect,
+    TextContentBlock,
+    TextResourceContents,
+    AgentCapabilities, CloseSessionResponse, SessionModeState, SessionMode, SessionConfigOptionSelect,
     SessionConfigSelectGroup, SessionConfigSelectOption,
 )
 
@@ -34,6 +39,10 @@ from acp.schema import (
 class EchoAgent(Agent):
     _conn: Client
     _agent: agy.Agent
+
+    def __init__(self, agent_t, agent_config_t):
+        self._agent_t = agent_t
+        self._agent_config_t = agent_config_t
 
     def on_connect(self, conn: Client) -> None:
         print("on_connect", file=f)
@@ -52,8 +61,8 @@ class EchoAgent(Agent):
     ) -> InitializeResponse:
         print("initialize", file=f)
 
-        config = agy.LocalAgentConfig()
-        self._agent = agy.Agent(config)
+        config = self._agent_config_t()
+        self._agent = self._agent_t(config)
 
         await self._agent.__aenter__()
 
@@ -105,39 +114,80 @@ class EchoAgent(Agent):
         **kwargs: Any,
     ) -> PromptResponse:
         print(f"prompt called, blocks={len(prompt)}, session_id={session_id}", file=f, flush=True)
-        content_blocks = []
 
+        parts: list[agy.types.ContentPrimitive] = []
         for block in prompt:
-            block_text = block.get("text", "") if isinstance(block, dict) else getattr(block, "text", "")
-            if not block_text:
-                print(f"skipping empty block: {type(block)}", file=f, flush=True)
-                continue
+            match block:
+                case {"type": "text", "text": text}:
+                    parts.append(text)
+                case TextContentBlock(text=text):
+                    parts.append(text)
+                case ImageContentBlock(data=data, mime_type=mime):
+                    parts.append(agy.types.Image(
+                        data=base64.b64decode(data),
+                        mime_type=mime,
+                    ))
+                case AudioContentBlock(data=data, mime_type=mime):
+                    parts.append(agy.types.Audio(
+                        data=base64.b64decode(data),
+                        mime_type=mime,
+                    ))
+                case EmbeddedResourceContentBlock(resource=TextResourceContents(text=text)):
+                    parts.append(text)
+                case EmbeddedResourceContentBlock(resource=BlobResourceContents(blob=blob, mime_type=mime)):
+                    parts.append(agy.types.Document(
+                        data=base64.b64decode(blob),
+                        mime_type=mime or "application/octet-stream",
+                    ))
+                case ResourceContentBlock(uri=uri, name=name):
+                    parts.append(f"[Attached resource: {name}]({uri})")
+                case _:
+                    print(f"skipping unknown block: {type(block)}", file=f, flush=True)
 
-            print(f"calling agent.chat with {len(block_text)} chars", file=f, flush=True)
-            try:
-                response = await self._agent.chat(block_text)
+        if not parts:
+            print("no content to send", file=f, flush=True)
+            return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
 
-                print("streaming thoughts...", file=f, flush=True)
-                async for t in response.thoughts:
-                    await self._conn.session_update(
-                        session_id=session_id, update=update_agent_thought_text(t),
-                                                    source="echo_agent")
-
-                print("extracting text...", file=f, flush=True)
-                text = await response.text()
-            except Exception as e:
-                print(f"error during agent chat: {e}", file=f, flush=True)
-                text = f"Error: {e}"
-
-            print(f"sending message chunk ({len(text)} chars)", file=f, flush=True)
-            chunk = update_agent_message(text_block(text))
-            chunk.message_id = message_id
-
+        print(f"calling agent.chat with {len(parts)} parts", file=f, flush=True)
+        tracker = ToolCallTracker()
+        text_acc: list[str] = []
+        try:
+            response = await self._agent.chat(parts)
+            async for chunk in response.chunks:
+                match chunk:
+                    case agy.types.Thought(text=t):
+                        await self._conn.session_update(
+                            session_id=session_id,
+                            update=update_agent_thought_text(t))
+                    case agy.types.Text(text=t):
+                        text_acc.append(t)
+                        await self._conn.session_update(
+                            session_id=session_id,
+                            update=update_agent_message(text_block(t)))
+                    case agy.types.ToolCall(name=name, id=tc_id, args=args):
+                        tc_id = tc_id or uuid4().hex
+                        start = tracker.start(tc_id, title=str(name), kind="execute",
+                                              raw_input=args)
+                        await self._conn.session_update(
+                            session_id=session_id, update=start)
+                    case agy.types.ToolResult(name=name, id=tc_id, result=result, error=err):
+                        tc_id = tc_id or ""
+                        try:
+                            progress = tracker.progress(
+                                tc_id,
+                                status="failed" if err else "completed",
+                                raw_output=err or result)
+                            await self._conn.session_update(
+                                session_id=session_id, update=progress)
+                        except KeyError:
+                            print(f"tool result for unknown call {tc_id}", file=f, flush=True)
+                    case _:
+                        print(f"unhandled chunk type: {type(chunk)}", file=f, flush=True)
+        except Exception as e:
+            print(f"error during agent chat: {e}", file=f, flush=True)
             await self._conn.session_update(
                 session_id=session_id,
-                update=chunk,
-                source="echo_agent")
-            content_blocks.append(text_block(text))
+                update=update_agent_message(text_block(f"Error: {e}")))
 
         print("returning PromptResponse", file=f, flush=True)
         return PromptResponse(
@@ -146,7 +196,7 @@ class EchoAgent(Agent):
         )
 
 async def main() -> None:
-    await run_agent(EchoAgent())
+    await run_agent(EchoAgent(agent_config_t=agy.LocalAgentConfig, agent_t=agy.Agent))
 
 if __name__ == "__main__":
     asyncio.run(main())
