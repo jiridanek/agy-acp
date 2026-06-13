@@ -53,7 +53,7 @@ async def main():
         store=SessionStore(path=Path("/tmp/agy-acp-fake-sessions.json")),
     )
     FakeToolAgent._echo_agent = agent
-    await run_agent(agent)
+    await run_agent(agent, use_unstable_protocol=True)
 
 
 if __name__ == "__main__":

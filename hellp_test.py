@@ -732,7 +732,8 @@ async def test_offline_model_switching():
     assert resp is not None
     assert sut._session_models[sid] == "gemini-2.5-flash"
     assert len(configs_seen) == 1
-    assert configs_seen[0]["model"] == "gemini-2.5-flash"
+    gemini_cfg = configs_seen[0]["gemini_config"]
+    assert gemini_cfg.models.default.name == "gemini-2.5-flash"
 
 
 async def test_offline_rebuild_passes_thinking_level():
@@ -760,6 +761,25 @@ async def test_offline_rebuild_passes_thinking_level():
     assert len(configs_seen) == 1
     gemini_cfg = configs_seen[0]["gemini_config"]
     assert gemini_cfg.models.default.generation.thinking_level.value == "high"
+
+
+async def test_offline_rebuild_uses_valid_local_agent_config():
+    """_rebuild_agent must produce a valid LocalAgentConfig (no conflicting model fields)."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=agy.LocalAgentConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    # This would raise "Cannot set both 'model' shorthand and
+    # 'gemini_config.models.default'" if _rebuild_agent passes both.
+    await sut.set_session_model(model_id="gemini-2.5-flash", session_id=sid)
 
 
 async def test_offline_model_persisted_in_session(tmp_path):
@@ -893,6 +913,10 @@ async def test_live_run():
             print("initialize failed:", e, e.data if hasattr(e, "data") else "")
 
         session = await conn.new_session(cwd=str(script.parent), mcp_servers=[])
+
+        await conn.set_session_model(
+            model_id="gemini-2.5-flash", session_id=session.session_id
+        )
 
         await conn.prompt(
             session_id=session.session_id,

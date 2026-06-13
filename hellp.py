@@ -437,7 +437,6 @@ class EchoAgent(Agent):
 
         from google.antigravity import types as agy_types
         config = self._agent_config_t(
-            model=model_id,
             capabilities=agy_types.CapabilitiesConfig(
                 disabled_tools=[
                     agy_types.BuiltinTools.VIEW_FILE,
@@ -845,7 +844,10 @@ class EchoAgent(Agent):
         )
 
 async def main() -> None:
-    await run_agent(EchoAgent(agent_config_t=agy.LocalAgentConfig, agent_t=agy.Agent))
+    await run_agent(
+        EchoAgent(agent_config_t=agy.LocalAgentConfig, agent_t=agy.Agent),
+        use_unstable_protocol=True,
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())
