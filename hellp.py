@@ -939,7 +939,6 @@ class EchoAgent(Agent):
         first_text = next((p for p in parts if isinstance(p, str)), "")
         if first_text.strip() in ("/reset", "reset"):
             log.debug("reset command for session %s", session_id)
-            await self._agent.__aexit__(None, None, None)
             await self._rebuild_agent(session_id)
             self._session_titles.pop(session_id, None)
             await self._conn.session_update(
