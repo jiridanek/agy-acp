@@ -485,10 +485,10 @@ class EchoAgent(Agent):
             )
         elif config_id == "model" and isinstance(value, str):
             self._session_models[session_id] = value
-            await self._rebuild_agent(session_id)
+            await self._rebuild_agent(session_id, conversation_id=getattr(self._agent, "conversation_id", None))
         elif config_id == "thinking_level" and isinstance(value, str):
             self._session_thinking_levels[session_id] = value
-            await self._rebuild_agent(session_id)
+            await self._rebuild_agent(session_id, conversation_id=getattr(self._agent, "conversation_id", None))
         return SetSessionConfigOptionResponse(config_options=self._build_config_options(session_id))
 
     async def authenticate(self, method_id: str, **kwargs: Any) -> AuthenticateResponse | None:
@@ -554,7 +554,7 @@ class EchoAgent(Agent):
     ) -> SetSessionModelResponse | None:
         log.debug("set_session_model model=%s session=%s", model_id, session_id)
         self._session_models[session_id] = model_id
-        await self._rebuild_agent(session_id)
+        await self._rebuild_agent(session_id, conversation_id=getattr(self._agent, "conversation_id", None))
         return SetSessionModelResponse()
 
     async def fork_session(

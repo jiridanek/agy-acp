@@ -909,6 +909,39 @@ async def test_offline_rebuild_passes_thinking_level():
     assert gemini_cfg.models.default.generation.thinking_level.value == "high"
 
 
+async def test_offline_model_switch_preserves_conversation():
+    """Switching model preserves the current conversation_id."""
+    import hellp
+
+    configs_seen = []
+    def tracking_config_t(**kwargs):
+        configs_seen.append(kwargs)
+        return FakeConfig(**kwargs)
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+    sut._agent_config_t = tracking_config_t
+
+    # Simulate a conversation_id on the current agent
+    type(sut._agent).conversation_id = property(lambda self: "conv-keep-me")
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    await sut.set_session_model(model_id="gemini-2.5-flash", session_id=sid)
+    assert configs_seen[-1].get("conversation_id") == "conv-keep-me"
+
+    # Also via config option
+    configs_seen.clear()
+    type(sut._agent).conversation_id = property(lambda self: "conv-keep-me-2")
+    await sut.set_config_option(config_id="thinking_level", session_id=sid, value="low")
+    assert configs_seen[-1].get("conversation_id") == "conv-keep-me-2"
+
+
 async def test_offline_rebuild_uses_valid_local_agent_config():
     """_rebuild_agent must produce a valid LocalAgentConfig (no conflicting model fields)."""
     import hellp
