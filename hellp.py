@@ -53,7 +53,7 @@ from acp.schema import (
     SseMcpServer,
     TextContentBlock,
     TextResourceContents,
-    AgentCapabilities, AuthEnvVar, AuthenticateResponse,
+    AgentAuthCapabilities, AgentCapabilities, AuthEnvVar, AuthenticateResponse,
     AvailableCommand, CloseSessionResponse,
     CurrentModeUpdate, EnvVarAuthMethod,
     ListSessionsResponse, LoadSessionResponse,
@@ -65,6 +65,7 @@ from acp.schema import (
     SetSessionConfigOptionResponse, SetSessionModeResponse,
     SetSessionModelResponse, Usage,
     Cost, ForkSessionResponse, ResumeSessionResponse,
+    SessionAdditionalDirectoriesCapabilities,
     SessionCapabilities, SessionCloseCapabilities,
     SessionForkCapabilities, SessionResumeCapabilities,
     RequestPermissionRequest, RequestPermissionResponse,
@@ -828,10 +829,12 @@ class EchoAgent(Agent):
             protocol_version=protocol_version,
             agent_info=Implementation(name="agy-acp", version="0.1.0", title="Antigravity ACP Adapter"),
             agent_capabilities=AgentCapabilities(
+                auth=AgentAuthCapabilities(),
                 prompt_capabilities=PromptCapabilities(
                     image=True, audio=True, embedded_context=True,
                 ),
                 session_capabilities=SessionCapabilities(
+                    additional_directories=SessionAdditionalDirectoriesCapabilities(),
                     close=SessionCloseCapabilities(),
                     fork=SessionForkCapabilities(),
                     list=SessionListCapabilities(),
