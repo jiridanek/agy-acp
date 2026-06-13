@@ -61,7 +61,8 @@ from acp.schema import (
     SessionModelState,
     SetSessionConfigOptionResponse, SetSessionModeResponse,
     SetSessionModelResponse, Usage,
-    SessionCapabilities, SessionCloseCapabilities,
+    ForkSessionResponse,
+    SessionCapabilities, SessionCloseCapabilities, SessionForkCapabilities,
     RequestPermissionRequest, RequestPermissionResponse,
     UsageUpdate, ToolCallUpdate, ToolCallLocation,
 )
@@ -471,6 +472,54 @@ class EchoAgent(Agent):
         await self._rebuild_agent(session_id)
         return SetSessionModelResponse()
 
+    async def fork_session(
+        self,
+        cwd: str,
+        session_id: str,
+        additional_directories: list[str] | None = None,
+        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
+        **kwargs: Any,
+    ) -> ForkSessionResponse:
+        log.debug("fork_session from %s", session_id)
+        new_id = uuid4().hex
+        mode = self._session_modes.get(session_id, "agent")
+        model = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
+        thinking = self._session_thinking_levels.get(session_id, _DEFAULT_THINKING_LEVEL)
+        title = self._session_titles.get(session_id)
+
+        self._cwd = cwd
+        self._session_modes[new_id] = mode
+        self._session_models[new_id] = model
+        self._session_thinking_levels[new_id] = thinking
+        if title:
+            self._session_titles[new_id] = f"{title} (fork)"
+
+        self._store.save(new_id, {
+            "session_id": new_id,
+            "conversation_id": None,
+            "cwd": cwd,
+            "mode": mode,
+            "model": model,
+            "thinking_level": thinking,
+            "title": self._session_titles.get(new_id),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        asyncio.ensure_future(self._send_available_commands(new_id))
+
+        return ForkSessionResponse(
+            session_id=new_id,
+            modes=SessionModeState(
+                current_mode_id=mode,
+                available_modes=[
+                    SessionMode(id="agent", name="Agent", description="Execute tools autonomously"),
+                    SessionMode(id="plan", name="Plan", description="Produce a plan without executing tools"),
+                ],
+            ),
+            models=self._build_model_state(new_id),
+            config_options=self._build_config_options(new_id),
+        )
+
     async def list_sessions(
         self,
         additional_directories: list[str] | None = None,
@@ -630,6 +679,7 @@ class EchoAgent(Agent):
                 ),
                 session_capabilities=SessionCapabilities(
                     close=SessionCloseCapabilities(),
+                    fork=SessionForkCapabilities(),
                     list=SessionListCapabilities(),
                 ),
                 load_session=True,
@@ -733,6 +783,17 @@ class EchoAgent(Agent):
 
         if not parts:
             log.debug("no content to send")
+            return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
+
+        first_text = next((p for p in parts if isinstance(p, str)), "")
+        if first_text.strip() == "/reset":
+            log.debug("reset command for session %s", session_id)
+            await self._agent.__aexit__(None, None, None)
+            await self._rebuild_agent(session_id)
+            self._session_titles.pop(session_id, None)
+            await self._conn.session_update(
+                session_id=session_id,
+                update=update_agent_message(text_block("Conversation reset.")))
             return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
 
         if self._session_modes.get(session_id) == "plan":

@@ -834,6 +834,83 @@ async def test_offline_close_session_cleans_model():
     assert sid not in sut._session_models
 
 
+async def test_offline_reset_command():
+    """/reset command rebuilds agent and clears session title."""
+    import hellp
+
+    chunks1 = [agy_types.Text(step_index=0, text="first response")]
+    chunks2 = [agy_types.Text(step_index=0, text="after reset")]
+    fake_agent = FakeAgent(config=None, responses=[chunks1, chunks2])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    # First prompt sets title
+    await sut.prompt([TextContentBlock(type="text", text="hello")], session_id=sid)
+    assert sid in sut._session_titles
+
+    # /reset clears title and rebuilds agent
+    client.reset_mock()
+    reply = await sut.prompt([TextContentBlock(type="text", text="/reset")], session_id=sid)
+    assert reply.stop_reason == "end_turn"
+    assert sid not in sut._session_titles
+
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    message_updates = [u for u in updates if u.session_update == "agent_message_chunk"]
+    assert any("reset" in u.content.text.lower() for u in message_updates)
+
+
+async def test_offline_fork_session(tmp_path):
+    """fork_session creates a new session copying settings from the original."""
+    import hellp
+
+    store = hellp.SessionStore(path=tmp_path / "sessions.json")
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd="/project")
+    sid = session.session_id
+    sut._session_titles[sid] = "My Session"
+    await sut.set_config_option(config_id="model", session_id=sid, value="gemini-2.5-pro")
+    await sut.set_config_option(config_id="thinking_level", session_id=sid, value="high")
+
+    forked = await sut.fork_session(cwd="/project", session_id=sid)
+    fid = forked.session_id
+
+    assert fid != sid
+    assert sut._session_modes[fid] == "agent"
+    assert sut._session_models[fid] == "gemini-2.5-pro"
+    assert sut._session_thinking_levels[fid] == "high"
+    assert sut._session_titles[fid] == "My Session (fork)"
+    assert forked.models is not None
+    assert forked.models.current_model_id == "gemini-2.5-pro"
+
+    # Forked session is persisted
+    stored = store.load(fid)
+    assert stored is not None
+    assert stored["model"] == "gemini-2.5-pro"
+
+
+async def test_offline_fork_capability_declared():
+    """InitializeResponse declares fork capability."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    resp = await sut.initialize(protocol_version=1)
+
+    assert resp.agent_capabilities.session_capabilities.fork is not None
+
+
 # --- Live tests (require GEMINI_API_KEY) ---
 
 async def test_initializes():
