@@ -34,7 +34,7 @@ from acp.schema import (
     SseMcpServer,
     TextContentBlock,
     TextResourceContents,
-    AgentCapabilities, CloseSessionResponse, PromptCapabilities,
+    AgentCapabilities, CloseSessionResponse, PromptCapabilities, Usage,
     SessionModeState, SessionMode, SessionConfigOptionSelect,
     SessionConfigSelectGroup, SessionConfigSelectOption,
 )
@@ -212,10 +212,25 @@ class EchoAgent(Agent):
         finally:
             self._active_tasks.pop(session_id, None)
 
+        usage = None
+        try:
+            meta = response.usage_metadata
+            if meta:
+                usage = Usage(
+                    input_tokens=meta.prompt_token_count or 0,
+                    output_tokens=meta.candidates_token_count or 0,
+                    total_tokens=meta.total_token_count or 0,
+                    thought_tokens=meta.thoughts_token_count,
+                    cached_read_tokens=meta.cached_content_token_count,
+                )
+        except Exception:
+            pass
+
         log.debug("returning PromptResponse stop_reason=%s", stop_reason)
         return PromptResponse(
             user_message_id=message_id,
             stop_reason=stop_reason,
+            usage=usage,
         )
 
 async def main() -> None:

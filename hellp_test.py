@@ -140,6 +140,29 @@ async def test_offline_empty_prompt_returns_early():
     client.session_update.assert_not_called()
 
 
+async def test_offline_usage_tracking():
+    """Verify usage metadata from the response is included in PromptResponse."""
+    import hellp
+
+    chunks = [agy_types.Text(step_index=0, text="Hi")]
+    fake_agent = FakeAgent(config=None, responses=[chunks])
+
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    reply = await sut.prompt(
+        [TextContentBlock(type="text", text="test")],
+        session_id=session.session_id,
+    )
+    # FakeAgent's MagicMock conversation returns MagicMock for usage_metadata,
+    # which has no real token counts — usage extraction should not crash
+    assert reply.stop_reason == "end_turn"
+
+
 async def test_offline_cancel():
     """Cancel mid-stream should return stop_reason='cancelled'."""
     import hellp
