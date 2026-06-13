@@ -359,6 +359,37 @@ async def test_offline_hook_mcp_tool_requires_permission():
     client.request_permission.assert_called_once()
 
 
+async def test_offline_hook_sdk_builtin_tools_auto_allow():
+    """SDK built-in tools like ask_question and finish auto-allow without permission."""
+    import hellp
+
+    sut = hellp.EchoAgent(
+        agent_t=lambda cfg: FakeAgent(config=None, responses=[]),
+        agent_config_t=FakeConfig,
+    )
+    await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
+
+    client = AsyncMock(spec=Client)
+    sut.on_connect(conn=client)
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    token = hellp.current_session_id.set(sid)
+    try:
+        from google.antigravity.hooks.hooks import OperationContext, TurnContext, SessionContext
+        pre_hook = hellp.MyPreToolCallDecideHook(sut)
+
+        for tool_name in ("ask_question", "finish", "start_subagent", "generate_image"):
+            op_ctx = OperationContext(TurnContext(SessionContext()))
+            tc = agy_types.ToolCall(id=f"tc-{tool_name}", name=tool_name, args={})
+            result = await pre_hook.run(op_ctx, tc)
+            assert result.allow is True, f"{tool_name} should auto-allow"
+    finally:
+        hellp.current_session_id.reset(token)
+
+    client.request_permission.assert_not_called()
+
+
 async def test_offline_tool_without_session_context():
     """Tool functions should return an error string, not crash, when no session context is set."""
     import hellp

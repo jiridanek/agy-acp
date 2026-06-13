@@ -106,7 +106,11 @@ _MODEL_PRICING: dict[str, tuple[float, float]] = {
 # Pro models: input 2x, output 1.5x when context exceeds 200k tokens
 _LONG_CONTEXT_THRESHOLD = 200_000
 
-_AUTO_ALLOW_TOOLS = {"view_file", "create_file", "edit_file", "list_directory", "find_file", "search_directory"}
+_AUTO_ALLOW_TOOLS = {
+    "view_file", "create_file", "edit_file",
+    "list_directory", "find_file", "search_directory",
+    "ask_question", "finish", "start_subagent", "generate_image",
+}
 
 
 def _get_token_rates(model_id: str, total_context_tokens: int) -> tuple[float, float] | None:
