@@ -17,14 +17,20 @@ from google.antigravity import types as agy_types
 
 
 class FakeAgent:
-    """Minimal fake matching the agy.Agent interface (chat, __aenter__, __aexit__, register_hook)."""
+    """Minimal fake matching the agy.Agent interface, with hook dispatch for ToolCall/ToolResult."""
 
     def __init__(self, config, responses=None):
         self._responses = responses or []
         self._call_index = 0
+        self._pre_hooks = []
+        self._post_hooks = []
 
     def register_hook(self, hook):
-        pass
+        from google.antigravity.hooks.hooks import PreToolCallDecideHook, PostToolCallHook
+        if isinstance(hook, PreToolCallDecideHook):
+            self._pre_hooks.append(hook)
+        elif isinstance(hook, PostToolCallHook):
+            self._post_hooks.append(hook)
 
     async def __aenter__(self):
         return self
@@ -39,12 +45,29 @@ class FakeAgent:
         else:
             chunks = [agy_types.Text(step_index=0, text="default response")]
 
-        async def stream():
-            for c in chunks:
-                yield c
+        pre_hooks = self._pre_hooks
+        post_hooks = self._post_hooks
 
-        # Plain MagicMock: spec=Conversation fails on Python 3.14 due to
-        # annotation resolution conflict in the Antigravity SDK
+        async def stream():
+            from google.antigravity.hooks.hooks import OperationContext, TurnContext, SessionContext
+            pending_contexts: dict[str, OperationContext] = {}
+            for c in chunks:
+                if isinstance(c, agy_types.ToolCall):
+                    op_ctx = OperationContext(TurnContext(SessionContext()))
+                    if c.id:
+                        pending_contexts[c.id] = op_ctx
+                    for h in pre_hooks:
+                        await h.run(op_ctx, c)
+                    yield c
+                elif isinstance(c, agy_types.ToolResult):
+                    op_ctx = pending_contexts.pop(c.id, None) if c.id else None
+                    if op_ctx is None:
+                        op_ctx = OperationContext(TurnContext(SessionContext()))
+                    for h in post_hooks:
+                        await h.run(op_ctx, c)
+                else:
+                    yield c
+
         return agy_types.ChatResponse(stream(), conversation=MagicMock())
 
 
@@ -89,12 +112,11 @@ async def test_offline_prompt_text():
 
 
 async def test_offline_prompt_with_tool_calls():
-    """Verify tool call and tool result chunks are forwarded as ACP tool_call updates."""
+    """ToolCalls in the stream are passed through (hooks handle start/complete in real agent)."""
     import hellp
 
     chunks = [
         agy_types.ToolCall(id="tc1", name="read_file", args={"path": "foo.py"}),
-        agy_types.ToolResult(id="tc1", name="read_file", result="file contents"),
         agy_types.Text(step_index=1, text="Done."),
     ]
     fake_agent = FakeAgent(config=None, responses=[chunks])
@@ -113,11 +135,52 @@ async def test_offline_prompt_with_tool_calls():
     assert reply.stop_reason == "end_turn"
 
     updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    message_updates = [u for u in updates if u.session_update == "agent_message_chunk"]
+    assert len(message_updates) == 1
+    assert message_updates[0].content.text == "Done."
+
+
+async def test_offline_hook_tool_tracking():
+    """Verify PreToolCallDecideHook + PostToolCallHook send start and completed updates."""
+    import hellp
+
+    sut = hellp.EchoAgent(
+        agent_t=lambda cfg: FakeAgent(config=None, responses=[]),
+        agent_config_t=FakeConfig,
+    )
+    await sut.initialize(protocol_version=1)
+
+    client = AsyncMock(spec=Client)
+    # Auto-approve permissions
+    client.request_permission.return_value = MagicMock(
+        outcome=MagicMock(option_id="approve")
+    )
+    sut.on_connect(conn=client)
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    token = hellp.current_session_id.set(sid)
+    try:
+        from google.antigravity.hooks.hooks import OperationContext, TurnContext, SessionContext
+        op_ctx = OperationContext(TurnContext(SessionContext()))
+
+        tc = agy_types.ToolCall(id="tc1", name="view_file", args={"path": "hello.py"})
+        pre_hook = hellp.MyPreToolCallDecideHook(sut)
+        result = await pre_hook.run(op_ctx, tc)
+        assert result.allow is True
+
+        post_hook = hellp.MyPostToolCallHook(sut)
+        tr = agy_types.ToolResult(id="tc1", name="view_file", result="file contents")
+        await post_hook.run(op_ctx, tr)
+    finally:
+        hellp.current_session_id.reset(token)
+
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
     tool_starts = [u for u in updates if u.session_update == "tool_call"]
     tool_progress = [u for u in updates if u.session_update == "tool_call_update"]
     assert len(tool_starts) == 1
-    assert tool_starts[0].title == "read_file: foo.py"
-    assert tool_starts[0].raw_input == {"path": "foo.py"}
+    assert tool_starts[0].title == "view_file: hello.py"
+    assert tool_starts[0].kind == "read"
     assert len(tool_progress) == 1
     assert tool_progress[0].status == "completed"
 

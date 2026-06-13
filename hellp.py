@@ -11,7 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 import google.antigravity as agy
-from google.antigravity.hooks.hooks import PreToolCallDecideHook, HookContext
+from google.antigravity.hooks.hooks import PostToolCallHook, PreToolCallDecideHook, HookContext
 from google.antigravity.types import HookResult
 
 log = logging.getLogger(__name__)
@@ -162,39 +162,39 @@ def _parse_plan_entries(lines: list[str]) -> list:
 
 
 class MyPreToolCallDecideHook(PreToolCallDecideHook):
-    """Safety decision hook requesting approval from the JetBrains IDE / client via ACP."""
+    """Intercepts tool calls: sends ACP start notification and requests permission."""
 
     def __init__(self, echo_agent: "EchoAgent"):
         self.echo_agent = echo_agent
 
     async def run(self, context: HookContext, data: agy.types.ToolCall) -> HookResult:
-        tool_name = str(data.name).lower()
-        kind = "other"
-        if "read" in tool_name or "view" in tool_name:
-            kind = "read"
-        elif "write" in tool_name or "edit" in tool_name or "replace" in tool_name:
-            kind = "edit"
-        elif "delete" in tool_name or "remove" in tool_name:
-            kind = "delete"
-        elif "move" in tool_name or "rename" in tool_name:
-            kind = "move"
-        elif "find" in tool_name or "search" in tool_name or "grep" in tool_name:
-            kind = "search"
-        elif "execute" in tool_name or "run" in tool_name:
-            kind = "execute"
-        elif "think" in tool_name:
-            kind = "think"
-        elif "fetch" in tool_name or "download" in tool_name:
-            kind = "fetch"
-
         session_id = current_session_id.get(None)
         if not session_id:
             log.warning("No session ID found in context for tool call %s", data.name)
             return HookResult(allow=True)
 
+        tool_call_id = data.id or uuid4().hex
+        kind = _tool_kind(str(data.name))
+        locations = None
+        if isinstance(data.args, dict) and "path" in data.args:
+            locations = [ToolCallLocation(path=data.args["path"])]
+
+        # Start ACP tool call tracking and notify client
+        # https://github.com/google-antigravity/antigravity-sdk-python/tree/main/examples/deep_dives/host_tool_hooks.py
+        start = self.echo_agent._tracker.start(
+            tool_call_id,
+            title=_tool_title(str(data.name), data.args),
+            kind=kind,
+            locations=locations,
+            raw_input=data.args,
+        )
+        await self.echo_agent._conn.session_update(
+            session_id=session_id, update=start)
+
+        context.set("acp_tc_id", tool_call_id)
+
         log.debug("Intercepted tool call %s in session %s", data.name, session_id)
 
-        # Build custom permission requester tied to the client connection
         async def requester(request: RequestPermissionRequest) -> RequestPermissionResponse:
             return await self.echo_agent._conn.request_permission(
                 options=request.options,
@@ -202,10 +202,9 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
                 tool_call=request.tool_call
             )
 
-        tool_call_id = data.id or uuid4().hex
         tool_call = ToolCallUpdate(
             tool_call_id=tool_call_id,
-            title=f"Call tool {data.name}",
+            title=_tool_title(str(data.name), data.args),
             kind=kind,
             raw_input=data.args,
         )
@@ -241,6 +240,50 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
             return HookResult(allow=False, message=f"Internal permission broker error: {e}")
 
 
+class MyPostToolCallHook(PostToolCallHook):
+    """Sends ACP tool_call_update with status=completed after tool execution."""
+
+    def __init__(self, echo_agent: "EchoAgent"):
+        self.echo_agent = echo_agent
+
+    async def run(self, context: HookContext, data: agy.types.ToolResult) -> None:
+        session_id = current_session_id.get(None)
+        tc_id = context.get("acp_tc_id")
+        if not session_id or not tc_id:
+            return
+
+        status = "failed" if data.error else "completed"
+        summary = str(data.error or data.result)[:2000]
+        content = [tool_content(text_block(summary))]
+
+        try:
+            view = self.echo_agent._tracker.view(tc_id)
+            if view.kind == "edit" and isinstance(view.raw_input, dict):
+                path = view.raw_input.get("path")
+                edit_info = self.echo_agent._last_file_edits.pop((session_id, path), None)
+                if edit_info:
+                    content = [tool_diff_content(
+                        path=path,
+                        new_text=edit_info["new_text"],
+                        old_text=edit_info["old_text"],
+                    )]
+            elif view.kind == "execute":
+                terminal_id = self.echo_agent._last_terminal_ids.pop(session_id, None)
+                if terminal_id:
+                    content = [tool_terminal_ref(terminal_id=terminal_id)]
+        except KeyError:
+            pass
+
+        try:
+            progress = self.echo_agent._tracker.progress(
+                tc_id, status=status, content=content,
+                raw_output=data.error or data.result)
+            await self.echo_agent._conn.session_update(
+                session_id=session_id, update=progress)
+        except KeyError:
+            log.debug("post hook: unknown tracker id %s", tc_id)
+
+
 class EchoAgent(Agent):
     _conn: Client
     _agent: agy.Agent
@@ -249,6 +292,7 @@ class EchoAgent(Agent):
         self._agent_t = agent_t
         self._agent_config_t = agent_config_t
         self._store = store or SessionStore()
+        self._tracker = ToolCallTracker()
         self._active_tasks: dict[str, asyncio.Task] = {}
         self._session_titles: dict[str, str] = {}
         self._session_modes: dict[str, str] = {}
@@ -456,9 +500,8 @@ class EchoAgent(Agent):
         )
         self._agent = self._agent_t(config)
 
-        # Register safety hook before starting the agent session
-        hook = MyPreToolCallDecideHook(self)
-        self._agent.register_hook(hook)
+        self._agent.register_hook(MyPreToolCallDecideHook(self))
+        self._agent.register_hook(MyPostToolCallHook(self))
 
         await self._agent.__aenter__()
 
@@ -582,14 +625,13 @@ class EchoAgent(Agent):
 
         log.debug("calling agent.chat with %d parts", len(parts))
         self._active_tasks[session_id] = asyncio.current_task()
-        tracker = ToolCallTracker()
         stop_reason = "end_turn"
         response = None
-        
+
         thought_lines: list[str] = []
         last_plan_len = 0
 
-        # Set session context var so safety hook can request permissions associated with session
+        # Tool call start/completion is handled by MyPreToolCallDecideHook / MyPostToolCallHook
         token = current_session_id.set(session_id)
         try:
             response = await self._agent.chat(parts)
@@ -612,63 +654,8 @@ class EchoAgent(Agent):
                         await self._conn.session_update(
                             session_id=session_id,
                             update=update_agent_message(text_block(t)))
-                    case agy.types.ToolCall(name=name, id=tc_id, args=args):
-                        tc_id = tc_id or uuid4().hex
-                        kind = _tool_kind(str(name))
-                        locations = None
-                        if isinstance(args, dict) and "path" in args:
-                            locations = [ToolCallLocation(path=args["path"])]
-
-                        start = tracker.start(
-                            tc_id,
-                            title=_tool_title(str(name), args),
-                            kind=kind,
-                            locations=locations,
-                            raw_input=args,
-                        )
-                        await self._conn.session_update(
-                            session_id=session_id, update=start)
-                    case agy.types.ToolResult(name=name, id=tc_id, result=result, error=err):
-                        tc_id = tc_id or ""
-                        
-                        content = None
-                        status = "failed" if err else "completed"
-
-                        try:
-                            view = tracker.view(tc_id)
-                            if view.kind == "edit" and isinstance(view.raw_input, dict):
-                                path = view.raw_input.get("path")
-                                if path:
-                                    edit_info = self._last_file_edits.get((session_id, path))
-                                    if edit_info:
-                                        content = [tool_diff_content(
-                                            path=path,
-                                            new_text=edit_info["new_text"],
-                                            old_text=edit_info["old_text"],
-                                        )]
-                                        self._last_file_edits.pop((session_id, path), None)
-                            elif view.kind == "execute":
-                                terminal_id = self._last_terminal_ids.get(session_id)
-                                if terminal_id:
-                                    content = [tool_terminal_ref(terminal_id=terminal_id)]
-                                    self._last_terminal_ids.pop(session_id, None)
-                        except KeyError:
-                            pass
-
-                        if content is None:
-                            summary = str(err or result)[:2000]
-                            content = [tool_content(text_block(summary))]
-
-                        try:
-                            progress = tracker.progress(
-                                tc_id,
-                                status=status,
-                                content=content,
-                                raw_output=err or result)
-                            await self._conn.session_update(
-                                session_id=session_id, update=progress)
-                        except KeyError:
-                            log.debug("tool result for unknown call %s", tc_id)
+                    case agy.types.ToolCall():
+                        pass  # handled by PreToolCallDecideHook
                     case _:
                         log.debug("unhandled chunk type: %s", type(chunk))
         except asyncio.CancelledError:
