@@ -97,6 +97,7 @@ from acp.schema import (
     ToolCallLocation,
     ToolCallUpdate,
     Usage,
+    UnstructuredCommandInput,
     UsageUpdate,
 )
 
@@ -1235,6 +1236,11 @@ class EchoAgent(Agent):
                         description="Summarize conversation and start fresh context",
                     ),
                     AvailableCommand(
+                        name="plan",
+                        description="Generate an implementation plan",
+                        input=UnstructuredCommandInput(hint="task description"),
+                    ),
+                    AvailableCommand(
                         name="help", description="Show available commands"
                     ),
                 ]
@@ -1379,6 +1385,15 @@ class EchoAgent(Agent):
             return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
 
         first_text = next((p for p in parts if isinstance(p, str)), "")
+
+        # /plan is special — it modifies content for agent.chat(), doesn't return early
+        plan_cmd = first_text.strip().lstrip("/")
+        if plan_cmd == "plan" or plan_cmd.startswith("plan "):
+            task = plan_cmd.removeprefix("plan").strip()
+            parts = [agy.types.SlashCommand(name=agy.types.BuiltinSlashCommandName.PLAN)]
+            if task:
+                parts.append(task)
+
         cmd_result = await self._handle_command(first_text.strip(), session_id)
         if cmd_result is not None:
             await self._conn.session_update(
