@@ -530,14 +530,22 @@ async def test_offline_config_option_model():
     session = await sut.new_session(cwd=".")
     sid = session.session_id
 
-    # Config options include model
+    # Config options include model and thinking_level
     assert any(opt.id == "model" for opt in session.config_options)
+    assert any(opt.id == "thinking_level" for opt in session.config_options)
 
     resp = await sut.set_config_option(config_id="model", session_id=sid, value="gemini-2.5-flash")
     assert sut._session_models[sid] == "gemini-2.5-flash"
 
     model_opt = next(o for o in resp.config_options if o.id == "model")
     assert model_opt.current_value == "gemini-2.5-flash"
+
+    # Set thinking level
+    resp2 = await sut.set_config_option(config_id="thinking_level", session_id=sid, value="high")
+    assert sut._session_thinking_levels[sid] == "high"
+
+    thinking_opt = next(o for o in resp2.config_options if o.id == "thinking_level")
+    assert thinking_opt.current_value == "high"
 
 
 async def test_offline_session_persistence(tmp_path):
@@ -709,8 +717,8 @@ async def test_offline_model_switching():
 
     # new_session returns model state
     assert session.models is not None
-    assert session.models.current_model_id == "gemini-2.5-pro"
-    assert len(session.models.available_models) == 3
+    assert session.models.current_model_id == "gemini-3.5-flash"
+    assert len(session.models.available_models) == 7
 
     # Switch model
     resp = await sut.set_session_model(model_id="gemini-2.5-flash", session_id=sid)
@@ -733,13 +741,13 @@ async def test_offline_model_persisted_in_session(tmp_path):
 
     session = await sut.new_session(cwd="/tmp")
     sid = session.session_id
-    await sut.set_session_model(model_id="gemini-2.0-flash", session_id=sid)
+    await sut.set_session_model(model_id="gemini-2.5-flash-lite", session_id=sid)
 
     # Trigger save via prompt
     await sut.prompt([TextContentBlock(type="text", text="hi")], session_id=sid)
 
     stored = store.load(sid)
-    assert stored["model"] == "gemini-2.0-flash"
+    assert stored["model"] == "gemini-2.5-flash-lite"
 
     # Load into fresh agent
     sut2 = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store)
@@ -748,7 +756,7 @@ async def test_offline_model_persisted_in_session(tmp_path):
 
     loaded = await sut2.load_session(cwd="/tmp", session_id=sid)
     assert loaded.models is not None
-    assert loaded.models.current_model_id == "gemini-2.0-flash"
+    assert loaded.models.current_model_id == "gemini-2.5-flash-lite"
 
 
 async def test_offline_close_session_cleans_model():

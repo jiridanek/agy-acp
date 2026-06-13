@@ -71,11 +71,18 @@ current_session_id = ContextVar("current_session_id")
 _DEFAULT_STORE_PATH = Path.home() / ".agy-acp" / "sessions.json"
 
 _AVAILABLE_MODELS = [
-    ModelInfo(model_id="gemini-2.5-pro", name="Gemini 2.5 Pro", description="Most capable model"),
-    ModelInfo(model_id="gemini-2.5-flash", name="Gemini 2.5 Flash", description="Fast and efficient"),
-    ModelInfo(model_id="gemini-2.0-flash", name="Gemini 2.0 Flash", description="Previous generation flash"),
+    ModelInfo(model_id="gemini-3.5-flash", name="Gemini 3.5 Flash"),
+    ModelInfo(model_id="gemini-3.1-pro-preview", name="Gemini 3.1 Pro"),
+    ModelInfo(model_id="gemini-3.1-pro-preview-customtools", name="Gemini 3.1 Pro (Custom Tools)"),
+    ModelInfo(model_id="gemini-3.1-flash-lite", name="Gemini 3.1 Flash Lite"),
+    ModelInfo(model_id="gemini-2.5-pro", name="Gemini 2.5 Pro"),
+    ModelInfo(model_id="gemini-2.5-flash", name="Gemini 2.5 Flash"),
+    ModelInfo(model_id="gemini-2.5-flash-lite", name="Gemini 2.5 Flash Lite"),
 ]
-_DEFAULT_MODEL_ID = "gemini-2.5-pro"
+_DEFAULT_MODEL_ID = "gemini-3.5-flash"
+
+_THINKING_LEVELS = ["minimal", "low", "medium", "high"]
+_DEFAULT_THINKING_LEVEL = "medium"
 
 
 class SessionStore:
@@ -309,6 +316,7 @@ class EchoAgent(Agent):
         self._session_modes: dict[str, str] = {}
         self._active_session_id: str | None = None
         self._session_models: dict[str, str] = {}
+        self._session_thinking_levels: dict[str, str] = {}
         self._last_file_edits: dict[tuple[str, str], dict[str, str | None]] = {}
         self._last_terminal_ids: dict[str, str] = {}
 
@@ -327,6 +335,7 @@ class EchoAgent(Agent):
         self._session_titles.pop(session_id, None)
         self._session_modes.pop(session_id, None)
         self._session_models.pop(session_id, None)
+        self._session_thinking_levels.pop(session_id, None)
         self._last_terminal_ids.pop(session_id, None)
         for key in [k for k in self._last_file_edits if k[0] == session_id]:
             del self._last_file_edits[key]
@@ -348,6 +357,7 @@ class EchoAgent(Agent):
     def _build_config_options(self, session_id: str) -> list[SessionConfigOptionSelect]:
         current_mode = self._session_modes.get(session_id, "agent")
         current_model = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
+        current_thinking = self._session_thinking_levels.get(session_id, _DEFAULT_THINKING_LEVEL)
         return [
             SessionConfigOptionSelect(
                 id="mode", name="Mode", type="select",
@@ -365,8 +375,18 @@ class EchoAgent(Agent):
                 category="model",
                 current_value=current_model,
                 options=[
-                    SessionConfigSelectOption(value=m.model_id, name=m.name, description=m.description)
+                    SessionConfigSelectOption(value=m.model_id, name=m.name)
                     for m in _AVAILABLE_MODELS
+                ],
+            ),
+            SessionConfigOptionSelect(
+                id="thinking_level", name="Thinking Level", type="select",
+                description="Controls depth of reasoning",
+                category="model",
+                current_value=current_thinking,
+                options=[
+                    SessionConfigSelectOption(value=lvl, name=lvl.capitalize())
+                    for lvl in _THINKING_LEVELS
                 ],
             ),
         ]
@@ -387,6 +407,8 @@ class EchoAgent(Agent):
             )
         elif config_id == "model" and isinstance(value, str):
             self._session_models[session_id] = value
+        elif config_id == "thinking_level" and isinstance(value, str):
+            self._session_thinking_levels[session_id] = value
         return SetSessionConfigOptionResponse(config_options=self._build_config_options(session_id))
 
     async def authenticate(self, method_id: str, **kwargs: Any) -> AuthenticateResponse | None:
@@ -446,8 +468,10 @@ class EchoAgent(Agent):
         self._cwd = cwd
         mode = stored.get("mode", "agent")
         model = stored.get("model", _DEFAULT_MODEL_ID)
+        thinking = stored.get("thinking_level", _DEFAULT_THINKING_LEVEL)
         self._session_modes[session_id] = mode
         self._session_models[session_id] = model
+        self._session_thinking_levels[session_id] = thinking
         if stored.get("title"):
             self._session_titles[session_id] = stored.get("title", "")
 
@@ -601,6 +625,7 @@ class EchoAgent(Agent):
 
         self._session_modes[session_id] = "agent"
         self._session_models[session_id] = _DEFAULT_MODEL_ID
+        self._session_thinking_levels[session_id] = _DEFAULT_THINKING_LEVEL
         asyncio.ensure_future(self._send_available_commands(session_id))
 
         return NewSessionResponse(
@@ -768,6 +793,7 @@ class EchoAgent(Agent):
             "cwd": getattr(self, "_cwd", "."),
             "mode": self._session_modes.get(session_id, "agent"),
             "model": self._session_models.get(session_id, _DEFAULT_MODEL_ID),
+            "thinking_level": self._session_thinking_levels.get(session_id, _DEFAULT_THINKING_LEVEL),
             "title": self._session_titles.get(session_id),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
