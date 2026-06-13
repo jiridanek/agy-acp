@@ -17,11 +17,14 @@ from google.antigravity import types as agy_types
 
 
 class FakeAgent:
-    """Minimal fake matching the agy.Agent interface (chat, __aenter__, __aexit__)."""
+    """Minimal fake matching the agy.Agent interface (chat, __aenter__, __aexit__, register_hook)."""
 
     def __init__(self, config, responses=None):
         self._responses = responses or []
         self._call_index = 0
+
+    def register_hook(self, hook):
+        pass
 
     async def __aenter__(self):
         return self
@@ -46,7 +49,8 @@ class FakeAgent:
 
 
 class FakeConfig:
-    pass
+    def __init__(self, **kwargs):
+        pass
 
 
 async def test_offline_prompt_text():
@@ -140,6 +144,149 @@ async def test_offline_empty_prompt_returns_early():
     client.session_update.assert_not_called()
 
 
+async def test_offline_custom_tools_disabled_and_registered():
+    """Verify built-in tools are disabled and custom file/shell tools are registered."""
+    import hellp
+    from google.antigravity.types import BuiltinTools
+
+    configs_passed = []
+    def spy_config(*args, **kwargs):
+        cfg = agy.LocalAgentConfig(*args, **kwargs)
+        configs_passed.append(cfg)
+        return cfg
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=spy_config)
+    await sut.initialize(protocol_version=1)
+
+    assert len(configs_passed) == 1
+    config = configs_passed[0]
+    # Check disabled built-ins
+    assert set(config.capabilities.disabled_tools) == {
+        BuiltinTools.VIEW_FILE,
+        BuiltinTools.CREATE_FILE,
+        BuiltinTools.EDIT_FILE,
+        BuiltinTools.RUN_COMMAND,
+    }
+    # Check custom tools registered in connection config
+    registered_tools = [t.__name__ for t in config.tools]
+    assert "view_file" in registered_tools
+    assert "create_file" in registered_tools
+    assert "edit_file" in registered_tools
+    assert "run_command" in registered_tools
+
+
+async def test_offline_plan_updates():
+    """Verify markdown checklists/todos in Thought chunks are emitted as AgentPlanUpdate."""
+    import hellp
+
+    chunks = [
+        agy_types.Thought(step_index=0, text="I should structure my tasks:\n- [ ] Task 1\n- [x] Task 2\n* Task 3"),
+        agy_types.Text(step_index=1, text="Thinking complete."),
+    ]
+    fake_agent = FakeAgent(config=None, responses=[chunks])
+
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = AsyncMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    await sut.prompt(
+        [TextContentBlock(type="text", text="make a plan")],
+        session_id=session.session_id,
+    )
+
+    # Gather session updates
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    plan_updates = [u for u in updates if u.session_update == "plan"]
+    
+    assert len(plan_updates) > 0
+    final_plan = plan_updates[-1]
+    assert len(final_plan.entries) == 3
+    assert final_plan.entries[0].content == "Task 1"
+    assert final_plan.entries[0].status == "pending"
+    assert final_plan.entries[1].content == "Task 2"
+    assert final_plan.entries[1].status == "completed"
+    assert final_plan.entries[2].content == "Task 3"
+    assert final_plan.entries[2].status == "pending"
+
+
+async def test_offline_rich_tool_outputs():
+    """Verify tool call progress includes rich diff details for file edits and terminal refs."""
+    import hellp
+
+    # Simulating a file edit and a run_command
+    chunks = [
+        agy_types.ToolCall(id="tc-edit", name="edit_file", args={"path": "foo.txt", "content": "new contents"}),
+        agy_types.ToolResult(id="tc-edit", name="edit_file", result="Success"),
+        agy_types.ToolCall(id="tc-run", name="run_command", args={"command": "ls -l"}),
+        agy_types.ToolResult(id="tc-run", name="run_command", result="total 0"),
+    ]
+    fake_agent = FakeAgent(config=None, responses=[chunks])
+
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = AsyncMock(spec=Client)
+    client.read_text_file.return_return = AsyncMock()
+    # Mocking file read response containing "old contents"
+    from acp.schema import ReadTextFileResponse, CreateTerminalResponse, TerminalOutputResponse, WaitForTerminalExitResponse
+    client.read_text_file.return_value = ReadTextFileResponse(content="old contents")
+    client.create_terminal.return_value = CreateTerminalResponse(terminal_id="term-123")
+    client.wait_for_terminal_exit.return_value = WaitForTerminalExitResponse()
+    client.terminal_output.return_value = TerminalOutputResponse(output="command output", truncated=False)
+
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    
+    # We prime the contextvar for the run
+    token = hellp.current_session_id.set(session.session_id)
+    try:
+        # Simulate first the python tools executing
+        res_edit = await sut.edit_file("foo.txt", "new contents")
+        assert "Successfully edited file" in res_edit
+        
+        res_run = await sut.run_command("ls -l")
+        assert res_run == "command output"
+    finally:
+        hellp.current_session_id.reset(token)
+
+    # Now run the prompt so the streamed events process
+    await sut.prompt(
+        [TextContentBlock(type="text", text="edit and run")],
+        session_id=session.session_id,
+    )
+
+    # Gather updates
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    
+    starts = [u for u in updates if u.session_update == "tool_call"]
+    progress = [u for u in updates if u.session_update == "tool_call_update"]
+
+    # Verify Kind/Location extraction
+    assert len(starts) == 2
+    assert starts[0].kind == "edit"
+    assert starts[0].locations[0].path == "foo.txt"
+    assert starts[1].kind == "execute"
+
+    # Verify Rich Tool Contents in updates
+    assert len(progress) == 2
+    edit_update = progress[0]
+    assert edit_update.status == "completed"
+    assert edit_update.content[0].type == "diff"
+    assert edit_update.content[0].path == "foo.txt"
+    assert edit_update.content[0].new_text == "new contents"
+    assert edit_update.content[0].old_text == "old contents"
+
+    term_update = progress[1]
+    assert term_update.status == "completed"
+    assert term_update.content[0].type == "terminal"
+    assert term_update.content[0].terminal_id == "term-123"
+
+
 async def test_offline_usage_tracking():
     """Verify usage metadata from the response is included in PromptResponse."""
     import hellp
@@ -174,6 +321,7 @@ async def test_offline_cancel():
 
     class SlowFakeAgent:
         def __init__(self, config): pass
+        def register_hook(self, hook): pass
         async def __aenter__(self): return self
         async def __aexit__(self, *a): pass
         async def chat(self, prompt):
@@ -209,7 +357,7 @@ async def test_initializes():
     sut.on_connect(conn=client)
 
     session = await sut.new_session(cwd=".")
-    prompt = TextContentBlock(type="text", text="Hello")
+    prompt = TextContentBlock(type="text", text="Say hello three times. Do not use any tools.")
     reply = await sut.prompt([prompt], session_id=session.session_id)
     assert reply.stop_reason == "end_turn"
 
@@ -243,13 +391,10 @@ async def test_live_run():
         except Exception as e:
             print("initialize failed:", e, e.data if hasattr(e, "data") else "")
 
-        try:
-            session = await conn.new_session(cwd=str(script.parent), mcp_servers=[])
-        except Exception as e:
-            print("initialize failed:", e, e.data if hasattr(e, "data") else "")
+        session = await conn.new_session(cwd=str(script.parent), mcp_servers=[])
 
         await conn.prompt(
             session_id=session.session_id,
-            prompt=[text_block("Say 'hello'")],
+            prompt=[text_block("Say hello three times. Do not use any tools.")],
             message_id=str(uuid4()),
         )

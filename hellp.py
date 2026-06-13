@@ -1,10 +1,14 @@
 import asyncio
 import base64
+import contextvars
 import logging
+from contextvars import ContextVar
 from typing import Any
 from uuid import uuid4
 
 import google.antigravity as agy
+from google.antigravity.hooks.hooks import PreToolCallDecideHook, HookContext
+from google.antigravity.types import HookResult
 
 log = logging.getLogger(__name__)
 log.addHandler(logging.FileHandler("file.log"))
@@ -19,6 +23,14 @@ from acp import (
     text_block,
     update_agent_message, update_agent_thought_text,
 )
+from acp.helpers import (
+    update_available_commands,
+    tool_diff_content,
+    tool_terminal_ref,
+    update_plan,
+    plan_entry,
+)
+from acp.contrib.permissions import PermissionBroker
 from acp.contrib.tool_calls import ToolCallTracker
 from acp.interfaces import Client
 from acp.schema import (
@@ -34,10 +46,96 @@ from acp.schema import (
     SseMcpServer,
     TextContentBlock,
     TextResourceContents,
-    AgentCapabilities, CloseSessionResponse, PromptCapabilities, Usage,
+    AgentCapabilities, AvailableCommand, CloseSessionResponse,
+    PromptCapabilities, SessionInfoUpdate, Usage,
     SessionModeState, SessionMode, SessionConfigOptionSelect,
     SessionConfigSelectGroup, SessionConfigSelectOption,
+    SessionCapabilities, SessionCloseCapabilities,
+    RequestPermissionRequest, RequestPermissionResponse,
+    UsageUpdate, ToolCallUpdate, ToolCallLocation,
 )
+
+current_session_id = ContextVar("current_session_id")
+
+
+class MyPreToolCallDecideHook(PreToolCallDecideHook):
+    """Safety decision hook requesting approval from the JetBrains IDE / client via ACP."""
+
+    def __init__(self, echo_agent: "EchoAgent"):
+        self.echo_agent = echo_agent
+
+    async def run(self, context: HookContext, data: agy.types.ToolCall) -> HookResult:
+        tool_name = str(data.name).lower()
+        kind = "other"
+        if "read" in tool_name or "view" in tool_name:
+            kind = "read"
+        elif "write" in tool_name or "edit" in tool_name or "replace" in tool_name:
+            kind = "edit"
+        elif "delete" in tool_name or "remove" in tool_name:
+            kind = "delete"
+        elif "move" in tool_name or "rename" in tool_name:
+            kind = "move"
+        elif "find" in tool_name or "search" in tool_name or "grep" in tool_name:
+            kind = "search"
+        elif "execute" in tool_name or "run" in tool_name:
+            kind = "execute"
+        elif "think" in tool_name:
+            kind = "think"
+        elif "fetch" in tool_name or "download" in tool_name:
+            kind = "fetch"
+
+        session_id = current_session_id.get(None)
+        if not session_id:
+            log.warning("No session ID found in context for tool call %s", data.name)
+            return HookResult(allow=True)
+
+        log.debug("Intercepted tool call %s in session %s", data.name, session_id)
+
+        # Build custom permission requester tied to the client connection
+        async def requester(request: RequestPermissionRequest) -> RequestPermissionResponse:
+            return await self.echo_agent._conn.request_permission(
+                options=request.options,
+                session_id=request.session_id,
+                tool_call=request.tool_call
+            )
+
+        tool_call_id = data.id or uuid4().hex
+        tool_call = ToolCallUpdate(
+            tool_call_id=tool_call_id,
+            title=f"Call tool {data.name}",
+            kind=kind,
+            raw_input=data.args,
+        )
+
+        broker = PermissionBroker(
+            session_id=session_id,
+            requester=requester,
+        )
+
+        try:
+            resp = await broker.request_for(
+                external_id=tool_call_id,
+                tool_call=tool_call,
+                description=f"Approve running {data.name} with arguments {data.args}?",
+            )
+            outcome = resp.outcome
+            if outcome is None:
+                return HookResult(allow=False, message="Permission rejected (no outcome)")
+
+            if isinstance(outcome, dict):
+                option_id = outcome.get("optionId") or outcome.get("option_id")
+            else:
+                option_id = getattr(outcome, "option_id", None)
+
+            if option_id in ("approve", "approve_for_session"):
+                log.debug("Tool call %s permitted", data.name)
+                return HookResult(allow=True)
+            else:
+                log.debug("Tool call %s rejected/cancelled", data.name)
+                return HookResult(allow=False, message="Permission rejected by user")
+        except Exception as e:
+            log.exception("Error requesting permission via broker")
+            return HookResult(allow=False, message=f"Internal permission broker error: {e}")
 
 
 class EchoAgent(Agent):
@@ -48,6 +146,9 @@ class EchoAgent(Agent):
         self._agent_t = agent_t
         self._agent_config_t = agent_config_t
         self._active_tasks: dict[str, asyncio.Task] = {}
+        self._session_titled: set[str] = set()
+        self._last_file_edits: dict[tuple[str, str], dict[str, str | None]] = {}
+        self._last_terminal_ids: dict[str, str] = {}
 
     def on_connect(self, conn: Client) -> None:
         log.debug("on_connect")
@@ -72,8 +173,71 @@ class EchoAgent(Agent):
     ) -> InitializeResponse:
         log.debug("initialize")
 
-        config = self._agent_config_t()
+        from google.antigravity import types as agy_types
+
+        # Build standalone tool functions that capture `self` via closure.
+        # Bound methods can't be passed directly because LocalAgentConfig
+        # deep-copies the config, which fails to pickle file descriptors on self._conn.
+        agent_ref = self
+
+        async def view_file(path: str) -> str:
+            """Reads and returns the contents of a file via the IDE."""
+            sid = current_session_id.get()
+            resp = await agent_ref._conn.read_text_file(path=path, session_id=sid)
+            return resp.content
+
+        async def create_file(path: str, content: str) -> str:
+            """Creates a new file with the specified content via the IDE."""
+            sid = current_session_id.get()
+            agent_ref._last_file_edits[(sid, path)] = {"old_text": None, "new_text": content}
+            await agent_ref._conn.write_text_file(content=content, path=path, session_id=sid)
+            return f"Successfully created file: {path}"
+
+        async def edit_file(path: str, content: str) -> str:
+            """Overwrites an existing file with new content via the IDE."""
+            sid = current_session_id.get()
+            old_text = None
+            try:
+                old_resp = await agent_ref._conn.read_text_file(path=path, session_id=sid)
+                old_text = old_resp.content
+            except Exception:
+                pass
+            agent_ref._last_file_edits[(sid, path)] = {"old_text": old_text, "new_text": content}
+            await agent_ref._conn.write_text_file(content=content, path=path, session_id=sid)
+            return f"Successfully edited file: {path}"
+
+        async def run_command(command: str) -> str:
+            """Runs a shell command in an IDE-managed terminal."""
+            sid = current_session_id.get()
+            term_resp = await agent_ref._conn.create_terminal(command=command, session_id=sid)
+            terminal_id = term_resp.terminal_id
+            agent_ref._last_terminal_ids[sid] = terminal_id
+            await agent_ref._conn.wait_for_terminal_exit(session_id=sid, terminal_id=terminal_id)
+            out_resp = await agent_ref._conn.terminal_output(session_id=sid, terminal_id=terminal_id)
+            await agent_ref._conn.release_terminal(session_id=sid, terminal_id=terminal_id)
+            return out_resp.output
+
+        self.view_file = view_file
+        self.create_file = create_file
+        self.edit_file = edit_file
+        self.run_command = run_command
+
+        config = self._agent_config_t(
+            capabilities=agy_types.CapabilitiesConfig(
+                disabled_tools=[
+                    agy_types.BuiltinTools.VIEW_FILE,
+                    agy_types.BuiltinTools.CREATE_FILE,
+                    agy_types.BuiltinTools.EDIT_FILE,
+                    agy_types.BuiltinTools.RUN_COMMAND,
+                ]
+            ),
+            tools=[view_file, create_file, edit_file, run_command],
+        )
         self._agent = self._agent_t(config)
+
+        # Register safety hook before starting the agent session
+        hook = MyPreToolCallDecideHook(self)
+        self._agent.register_hook(hook)
 
         await self._agent.__aenter__()
 
@@ -84,6 +248,9 @@ class EchoAgent(Agent):
             agent_capabilities=AgentCapabilities(
                 prompt_capabilities=PromptCapabilities(
                     image=True, audio=True, embedded_context=True,
+                ),
+                session_capabilities=SessionCapabilities(
+                    close=SessionCloseCapabilities(),
                 ),
             ),
         )
@@ -96,8 +263,16 @@ class EchoAgent(Agent):
         **kwargs: Any,
     ) -> NewSessionResponse:
         self._cwd = cwd
+        session_id = uuid4().hex
+
+        # Wire cwd to workspaces on LocalAgentConfig if supported by the agent config
+        if hasattr(self._agent, "_config") and hasattr(self._agent._config, "workspaces"):
+            self._agent._config.workspaces = [cwd]
+
+        asyncio.ensure_future(self._send_available_commands(session_id))
+
         return NewSessionResponse(
-            session_id=uuid4().hex,
+            session_id=session_id,
             config_options=[
                 SessionConfigOptionSelect(id="agent", name="Agent", description="Agenting",
                                           current_value="Agent",
@@ -113,8 +288,14 @@ class EchoAgent(Agent):
                                                   ]
                                               )],
             type="select")])
-        # SessionConfigOptionSelect(id="plan", name="Plan", description="Planning"),
-        # current_mode_id="agent",
+
+    async def _send_available_commands(self, session_id: str) -> None:
+        await self._conn.session_update(
+            session_id=session_id,
+            update=update_available_commands([
+                AvailableCommand(name="/reset", description="Clear conversation history"),
+            ]),
+        )
 
     async def prompt(
         self,
@@ -164,10 +345,31 @@ class EchoAgent(Agent):
             log.debug("no content to send")
             return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
 
+        if session_id not in self._session_titled:
+            self._session_titled.add(session_id)
+            first_text = next((p for p in parts if isinstance(p, str)), None)
+            if first_text:
+                title = first_text[:80].split("\n")[0]
+                await self._conn.session_update(
+                    session_id=session_id,
+                    update=SessionInfoUpdate(
+                        session_update="session_info_update",
+                        title=title,
+                    ),
+                )
+
         log.debug("calling agent.chat with %d parts", len(parts))
         self._active_tasks[session_id] = asyncio.current_task()
         tracker = ToolCallTracker()
         stop_reason = "end_turn"
+        response = None
+        
+        # Track and stream thought/plan updates
+        thought_buffer = [""]
+        last_entries = [None]
+        
+        # Set session context var so safety hook can request permissions associated with session
+        token = current_session_id.set(session_id)
         try:
             response = await self._agent.chat(parts)
             async for chunk in response.chunks:
@@ -176,22 +378,99 @@ class EchoAgent(Agent):
                         await self._conn.session_update(
                             session_id=session_id,
                             update=update_agent_thought_text(t))
+                            
+                        # Process and stream automated plan updates
+                        thought_buffer[0] += t
+                        new_entries = []
+                        for line in thought_buffer[0].split("\n"):
+                            line = line.strip()
+                            if not line:
+                                continue
+                            if line.startswith(("- [ ] ", "* [ ] ", "- ", "* ", "1. ")):
+                                status = "pending"
+                                content = line
+                                if "[ ]" in line:
+                                    status = "pending"
+                                    content = line.split("[ ]", 1)[1].strip()
+                                elif "[x]" in line or "[X]" in line:
+                                    status = "completed"
+                                    content = line.split("]", 1)[1].strip()
+                                elif "[-]" in line or "[/]" in line:
+                                    status = "in_progress"
+                                    content = line.split("]", 1)[1].strip()
+                                else:
+                                    for prefix in ("- ", "* ", "1. "):
+                                        if content.startswith(prefix):
+                                            content = content[len(prefix):].strip()
+                                if content:
+                                    new_entries.append(plan_entry(content=content, status=status))
+                        
+                        if new_entries and new_entries != last_entries[0]:
+                            last_entries[0] = new_entries
+                            await self._conn.session_update(
+                                session_id=session_id,
+                                update=update_plan(new_entries)
+                            )
                     case agy.types.Text(text=t):
                         await self._conn.session_update(
                             session_id=session_id,
                             update=update_agent_message(text_block(t)))
                     case agy.types.ToolCall(name=name, id=tc_id, args=args):
                         tc_id = tc_id or uuid4().hex
-                        start = tracker.start(tc_id, title=str(name), kind="execute",
-                                              raw_input=args)
+                        tool_name = str(name).lower()
+                        
+                        kind = "execute"
+                        locations = None
+                        
+                        if "read" in tool_name or "view" in tool_name:
+                            kind = "read"
+                        elif "create" in tool_name or "write" in tool_name or "edit" in tool_name:
+                            kind = "edit"
+                            
+                        if isinstance(args, dict) and "path" in args:
+                            locations = [ToolCallLocation(path=args["path"])]
+                            
+                        start = tracker.start(
+                            tc_id,
+                            title=str(name),
+                            kind=kind,
+                            locations=locations,
+                            raw_input=args
+                        )
                         await self._conn.session_update(
                             session_id=session_id, update=start)
                     case agy.types.ToolResult(name=name, id=tc_id, result=result, error=err):
                         tc_id = tc_id or ""
+                        
+                        content = None
+                        status = "failed" if err else "completed"
+                        
+                        try:
+                            view = tracker.view(tc_id)
+                            if view.kind == "edit" and isinstance(view.raw_input, dict):
+                                path = view.raw_input.get("path")
+                                if path:
+                                    edit_info = self._last_file_edits.get((session_id, path))
+                                    if edit_info:
+                                        content = [tool_diff_content(
+                                            path=path,
+                                            new_text=edit_info["new_text"],
+                                            old_text=edit_info["old_text"]
+                                        )]
+                                        self._last_file_edits.pop((session_id, path), None)
+                            elif view.kind == "execute":
+                                terminal_id = self._last_terminal_ids.get(session_id)
+                                if terminal_id:
+                                    content = [tool_terminal_ref(terminal_id=terminal_id)]
+                                    self._last_terminal_ids.pop(session_id, None)
+                        except KeyError:
+                            log.debug("tool result view query failed for %s", tc_id)
+
                         try:
                             progress = tracker.progress(
                                 tc_id,
-                                status="failed" if err else "completed",
+                                status=status,
+                                content=content,
                                 raw_output=err or result)
                             await self._conn.session_update(
                                 session_id=session_id, update=progress)
@@ -201,7 +480,7 @@ class EchoAgent(Agent):
                         log.debug("unhandled chunk type: %s", type(chunk))
         except asyncio.CancelledError:
             log.debug("prompt cancelled for session %s", session_id)
-            if hasattr(response, "cancel"):
+            if response is not None and hasattr(response, "cancel"):
                 await response.cancel()
             stop_reason = "cancelled"
         except Exception as e:
@@ -210,19 +489,30 @@ class EchoAgent(Agent):
                 session_id=session_id,
                 update=update_agent_message(text_block(f"Error: {e}")))
         finally:
+            current_session_id.reset(token)
             self._active_tasks.pop(session_id, None)
 
         usage = None
         try:
-            meta = response.usage_metadata
-            if meta:
-                usage = Usage(
-                    input_tokens=meta.prompt_token_count or 0,
-                    output_tokens=meta.candidates_token_count or 0,
-                    total_tokens=meta.total_token_count or 0,
-                    thought_tokens=meta.thoughts_token_count,
-                    cached_read_tokens=meta.cached_content_token_count,
-                )
+            if response is not None:
+                meta = response.usage_metadata
+                if meta:
+                    usage = Usage(
+                        input_tokens=meta.prompt_token_count or 0,
+                        output_tokens=meta.candidates_token_count or 0,
+                        total_tokens=meta.total_token_count or 0,
+                        thought_tokens=meta.thoughts_token_count,
+                        cached_read_tokens=meta.cached_content_token_count,
+                    )
+                    # Notify the client with a real-time UsageUpdate
+                    await self._conn.session_update(
+                        session_id=session_id,
+                        update=UsageUpdate(
+                            session_update="usage_update",
+                            size=1048576,
+                            used=meta.total_token_count or 0,
+                        )
+                    )
         except Exception:
             pass
 
