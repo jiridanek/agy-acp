@@ -493,7 +493,7 @@ class EchoAgent(Agent):
                 ],
             ),
             SessionConfigOptionSelect(
-                id="thinking_level", name="Thinking Level", type="select",
+                id="thinking_level", name="Thinking", type="select",
                 description="Controls depth of reasoning (3.x models only, ignored for 2.x)",
                 category="model",
                 current_value=current_thinking,

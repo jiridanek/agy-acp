@@ -83,7 +83,7 @@ IDE (IntelliJ) <--ACP JSON-RPC--> EchoAgent <---> Antigravity SDK <---> Gemini A
 ## Features
 
 - **Models**: Gemini 3.5 Flash (default), 3.1 Pro, 2.5 Pro/Flash/Flash-Lite, and more
-- **Thinking level**: Minimal/Low/Medium/High (3.x models only)
+- **Thinking** (`thinking_level`): Minimal/Low/Medium/High (3.x models only)
 - **Modes**: Agent (autonomous) and Plan (no tool execution)
 - **Sessions**: Create, list, load, fork, resume with conversation persistence
 - **MCP servers**: HTTP, SSE, and stdio transports (with env variable workaround)
