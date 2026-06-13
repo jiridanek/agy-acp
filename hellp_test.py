@@ -909,6 +909,74 @@ async def test_offline_fork_capability_declared():
     resp = await sut.initialize(protocol_version=1)
 
     assert resp.agent_capabilities.session_capabilities.fork is not None
+    assert resp.agent_capabilities.session_capabilities.resume is not None
+
+
+async def test_offline_resume_session(tmp_path):
+    """resume_session restores mode, model, thinking level, and rebuilds agent with conversation_id."""
+    import hellp
+
+    store = hellp.SessionStore(path=tmp_path / "sessions.json")
+    chunks = [agy_types.Text(step_index=0, text="hello")]
+    fake_agent = FakeAgent(config=None, responses=[chunks])
+
+    configs_seen = []
+    original_config_t = FakeConfig
+    def tracking_config_t(**kwargs):
+        configs_seen.append(kwargs)
+        return original_config_t(**kwargs)
+
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    # Create a session, prompt to generate conversation_id, then save
+    session = await sut.new_session(cwd="/project")
+    sid = session.session_id
+    await sut.set_config_option(config_id="model", session_id=sid, value="gemini-2.5-pro")
+    await sut.set_config_option(config_id="thinking_level", session_id=sid, value="high")
+
+    # Simulate a conversation_id being set (normally set by Go harness)
+    sut._agent.conversation_id_value = "conv-abc-123"
+    # Patch the agent to return a conversation_id
+    type(sut._agent).conversation_id = property(lambda self: getattr(self, 'conversation_id_value', None))
+
+    await sut.prompt([TextContentBlock(type="text", text="hi")], session_id=sid)
+
+    stored = store.load(sid)
+    assert stored["conversation_id"] == "conv-abc-123"
+
+    # Resume in a fresh agent instance
+    sut2 = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=tracking_config_t, store=store)
+    await sut2.initialize(protocol_version=1)
+    sut2.on_connect(conn=MagicMock(spec=Client))
+
+    resp = await sut2.resume_session(cwd="/project", session_id=sid)
+
+    assert resp.models.current_model_id == "gemini-2.5-pro"
+    assert resp.modes.current_mode_id == "agent"
+    assert sut2._session_thinking_levels[sid] == "high"
+
+    # _rebuild_agent was called with conversation_id
+    assert len(configs_seen) >= 1
+    rebuild_config = configs_seen[-1]
+    assert rebuild_config.get("conversation_id") == "conv-abc-123"
+
+
+async def test_offline_resume_session_not_found(tmp_path):
+    """resume_session raises ValueError for unknown session_id."""
+    import hellp
+
+    store = hellp.SessionStore(path=tmp_path / "sessions.json")
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store)
+    await sut.initialize(protocol_version=1)
+    sut.on_connect(conn=MagicMock(spec=Client))
+
+    with pytest.raises(ValueError, match="Session not found"):
+        await sut.resume_session(cwd="/project", session_id="nonexistent")
 
 
 # --- Live tests (require GEMINI_API_KEY) ---

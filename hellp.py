@@ -61,8 +61,9 @@ from acp.schema import (
     SessionModelState,
     SetSessionConfigOptionResponse, SetSessionModeResponse,
     SetSessionModelResponse, Usage,
-    ForkSessionResponse,
-    SessionCapabilities, SessionCloseCapabilities, SessionForkCapabilities,
+    ForkSessionResponse, ResumeSessionResponse,
+    SessionCapabilities, SessionCloseCapabilities,
+    SessionForkCapabilities, SessionResumeCapabilities,
     RequestPermissionRequest, RequestPermissionResponse,
     UsageUpdate, ToolCallUpdate, ToolCallLocation,
 )
@@ -70,6 +71,7 @@ from acp.schema import (
 current_session_id = ContextVar("current_session_id")
 
 _DEFAULT_STORE_PATH = Path.home() / ".agy-acp" / "sessions.json"
+_DEFAULT_SAVE_DIR = str(Path.home() / ".agy-acp" / "trajectories")
 
 _AVAILABLE_MODELS = [
     ModelInfo(model_id="gemini-3.5-flash", name="Gemini 3.5 Flash"),
@@ -429,7 +431,11 @@ class EchoAgent(Agent):
             available_models=_AVAILABLE_MODELS,
         )
 
-    async def _rebuild_agent(self, session_id: str) -> None:
+    async def _rebuild_agent(
+        self, session_id: str,
+        conversation_id: str | None = None,
+        save_dir: str | None = None,
+    ) -> None:
         """Tear down and recreate the Antigravity agent with current model/thinking settings."""
         model_id = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
         thinking = self._session_thinking_levels.get(session_id, _DEFAULT_THINKING_LEVEL)
@@ -457,12 +463,14 @@ class EchoAgent(Agent):
                     ),
                 ),
             ),
+            conversation_id=conversation_id,
+            save_dir=save_dir or _DEFAULT_SAVE_DIR,
         )
         self._agent = self._agent_t(config)
         self._agent.register_hook(MyPreToolCallDecideHook(self))
         self._agent.register_hook(MyPostToolCallHook(self))
         await self._agent.__aenter__()
-        log.debug("rebuilt agent with model=%s thinking=%s", model_id, thinking)
+        log.debug("rebuilt agent model=%s thinking=%s conv=%s", model_id, thinking, conversation_id)
 
     async def set_session_model(
         self, model_id: str, session_id: str, **kwargs: Any,
@@ -518,6 +526,49 @@ class EchoAgent(Agent):
             ),
             models=self._build_model_state(new_id),
             config_options=self._build_config_options(new_id),
+        )
+
+    async def resume_session(
+        self,
+        cwd: str,
+        session_id: str,
+        additional_directories: list[str] | None = None,
+        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
+        **kwargs: Any,
+    ) -> ResumeSessionResponse:
+        log.debug("resume_session %s", session_id)
+        stored = self._store.load(session_id)
+        if not stored:
+            raise ValueError(f"Session not found: {session_id}")
+
+        self._cwd = cwd
+        mode = stored.get("mode", "agent")
+        model = stored.get("model", _DEFAULT_MODEL_ID)
+        thinking = stored.get("thinking_level", _DEFAULT_THINKING_LEVEL)
+        conv_id = stored.get("conversation_id")
+
+        self._session_modes[session_id] = mode
+        self._session_models[session_id] = model
+        self._session_thinking_levels[session_id] = thinking
+        if stored.get("title"):
+            self._session_titles[session_id] = stored["title"]
+
+        if conv_id:
+            log.debug("resuming conversation %s", conv_id)
+            await self._rebuild_agent(session_id, conversation_id=conv_id)
+
+        asyncio.ensure_future(self._send_available_commands(session_id))
+
+        return ResumeSessionResponse(
+            modes=SessionModeState(
+                current_mode_id=mode,
+                available_modes=[
+                    SessionMode(id="agent", name="Agent", description="Execute tools autonomously"),
+                    SessionMode(id="plan", name="Plan", description="Produce a plan without executing tools"),
+                ],
+            ),
+            models=self._build_model_state(session_id),
+            config_options=self._build_config_options(session_id),
         )
 
     async def list_sessions(
@@ -661,6 +712,7 @@ class EchoAgent(Agent):
                 ]
             ),
             tools=[view_file, create_file, edit_file, run_command],
+            save_dir=_DEFAULT_SAVE_DIR,
         )
         self._agent = self._agent_t(config)
 
@@ -681,6 +733,7 @@ class EchoAgent(Agent):
                     close=SessionCloseCapabilities(),
                     fork=SessionForkCapabilities(),
                     list=SessionListCapabilities(),
+                    resume=SessionResumeCapabilities(),
                 ),
                 load_session=True,
             ),
