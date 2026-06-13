@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import re
+import sys
+import tempfile
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
@@ -182,6 +184,49 @@ def _parse_plan_entries(lines: list[str]) -> list:
     return entries
 
 
+def _convert_mcp_server(server: HttpMcpServer | SseMcpServer | McpServerStdio):
+    """Convert ACP MCP server config to Antigravity SDK type."""
+    from google.antigravity import types as agy_types
+
+    if isinstance(server, (HttpMcpServer, SseMcpServer)):
+        headers = {h.name: h.value for h in server.headers} if server.headers else {}
+        return agy_types.McpStreamableHttpServer(
+            name=server.name, url=server.url, type="http", headers=headers,
+        )
+
+    # agy SDK gap: McpStdioServer has no env field,
+    # see github.com/google-antigravity/antigravity-sdk-python/issues/61
+    if isinstance(server, McpServerStdio) and server.env:
+        env_dict = {e.name: e.value for e in server.env}
+        fd, env_file = tempfile.mkstemp(prefix="agy_mcp_env_", suffix=".json")
+        with os.fdopen(fd, "w") as f:
+            json.dump(env_dict, f)
+        os.chmod(env_file, 0o600)
+        loader = (
+            f"import json,os,sys;"
+            f"e=json.load(open({env_file!r}));"
+            f"os.unlink({env_file!r});"
+            f"os.environ.update(e);"
+            f"os.execvp({server.command!r},[{server.command!r}]+{server.args!r})"
+        )
+        return agy_types.McpStdioServer(
+            name=server.name, command=sys.executable,
+            args=["-ISs", "-c", loader], type="stdio",
+        )
+
+    return agy_types.McpStdioServer(
+        name=server.name, command=server.command, args=server.args, type="stdio",
+    )
+
+
+def _convert_mcp_servers(
+    servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None,
+) -> list | None:
+    if not servers:
+        return None
+    return [_convert_mcp_server(s) for s in servers]
+
+
 class MyPreToolCallDecideHook(PreToolCallDecideHook):
     """Intercepts tool calls: sends ACP start notification and requests permission."""
 
@@ -321,6 +366,7 @@ class EchoAgent(Agent):
         self._session_models: dict[str, str] = {}
         self._session_thinking_levels: dict[str, str] = {}
         self._session_additional_dirs: dict[str, list[str]] = {}
+        self._session_mcp_servers: dict[str, list] = {}
         self._last_file_edits: dict[tuple[str, str], dict[str, str | None]] = {}
         self._last_terminal_ids: dict[str, str] = {}
 
@@ -341,6 +387,7 @@ class EchoAgent(Agent):
         self._session_models.pop(session_id, None)
         self._session_thinking_levels.pop(session_id, None)
         self._session_additional_dirs.pop(session_id, None)
+        self._session_mcp_servers.pop(session_id, None)
         self._last_terminal_ids.pop(session_id, None)
         for key in [k for k in self._last_file_edits if k[0] == session_id]:
             del self._last_file_edits[key]
@@ -468,6 +515,7 @@ class EchoAgent(Agent):
             conversation_id=conversation_id,
             save_dir=save_dir or _DEFAULT_SAVE_DIR,
             workspaces=[getattr(self, "_cwd", ".")] + self._session_additional_dirs.get(session_id, []),
+            mcp_servers=self._session_mcp_servers.get(session_id) or None,
         )
         self._agent = self._agent_t(config)
         self._agent.register_hook(MyPreToolCallDecideHook(self))
@@ -503,6 +551,10 @@ class EchoAgent(Agent):
         self._session_models[new_id] = model
         self._session_thinking_levels[new_id] = thinking
         self._session_additional_dirs[new_id] = additional_directories or self._session_additional_dirs.get(session_id, [])
+        if mcp_servers:
+            self._session_mcp_servers[new_id] = _convert_mcp_servers(mcp_servers) or []
+        elif session_id in self._session_mcp_servers:
+            self._session_mcp_servers[new_id] = self._session_mcp_servers[session_id]
         if title:
             self._session_titles[new_id] = f"{title} (fork)"
 
@@ -555,6 +607,9 @@ class EchoAgent(Agent):
         self._session_models[session_id] = model
         self._session_thinking_levels[session_id] = thinking
         self._session_additional_dirs[session_id] = additional_directories or []
+        converted = _convert_mcp_servers(mcp_servers)
+        if converted:
+            self._session_mcp_servers[session_id] = converted
         if stored.get("title"):
             self._session_titles[session_id] = stored["title"]
 
@@ -616,6 +671,9 @@ class EchoAgent(Agent):
         self._session_models[session_id] = model
         self._session_thinking_levels[session_id] = thinking
         self._session_additional_dirs[session_id] = additional_directories or []
+        converted = _convert_mcp_servers(mcp_servers)
+        if converted:
+            self._session_mcp_servers[session_id] = converted
         if stored.get("title"):
             self._session_titles[session_id] = stored.get("title", "")
 
@@ -777,6 +835,9 @@ class EchoAgent(Agent):
         self._session_models[session_id] = _DEFAULT_MODEL_ID
         self._session_thinking_levels[session_id] = _DEFAULT_THINKING_LEVEL
         self._session_additional_dirs[session_id] = additional_directories or []
+        converted = _convert_mcp_servers(mcp_servers)
+        if converted:
+            self._session_mcp_servers[session_id] = converted
         asyncio.ensure_future(self._send_available_commands(session_id))
 
         return NewSessionResponse(
