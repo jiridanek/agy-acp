@@ -725,6 +725,7 @@ class EchoAgent(Agent):
 
         return InitializeResponse(
             protocol_version=protocol_version,
+            agent_info=Implementation(name="agy-acp", version="0.1.0", title="Antigravity ACP Adapter"),
             agent_capabilities=AgentCapabilities(
                 prompt_capabilities=PromptCapabilities(
                     image=True, audio=True, embedded_context=True,

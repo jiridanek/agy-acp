@@ -912,6 +912,20 @@ async def test_offline_fork_capability_declared():
     assert resp.agent_capabilities.session_capabilities.resume is not None
 
 
+async def test_offline_agent_info_declared():
+    """InitializeResponse includes agent name, version, and title."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    resp = await sut.initialize(protocol_version=1)
+
+    assert resp.agent_info is not None
+    assert resp.agent_info.name == "agy-acp"
+    assert resp.agent_info.version == "0.1.0"
+    assert resp.agent_info.title == "Antigravity ACP Adapter"
+
+
 async def test_offline_resume_session(tmp_path):
     """resume_session restores mode, model, thinking level, and rebuilds agent with conversation_id."""
     import hellp
