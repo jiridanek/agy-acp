@@ -106,6 +106,8 @@ _MODEL_PRICING: dict[str, tuple[float, float]] = {
 # Pro models: input 2x, output 1.5x when context exceeds 200k tokens
 _LONG_CONTEXT_THRESHOLD = 200_000
 
+_AUTO_ALLOW_TOOLS = {"view_file", "create_file", "edit_file", "list_directory", "find_file", "search_directory"}
+
 
 def _get_token_rates(model_id: str, total_context_tokens: int) -> tuple[float, float] | None:
     pricing = _MODEL_PRICING.get(model_id)
@@ -286,8 +288,7 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
 
         log.debug("Intercepted tool call %s in session %s", data.name, session_id)
 
-        # File tools auto-allow; only run_command requires IDE permission
-        if str(data.name) != "run_command":
+        if str(data.name) in _AUTO_ALLOW_TOOLS:
             return HookResult(allow=True)
 
         async def requester(request: RequestPermissionRequest) -> RequestPermissionResponse:

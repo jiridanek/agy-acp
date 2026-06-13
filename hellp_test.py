@@ -320,6 +320,39 @@ async def test_offline_hook_run_command_denied():
     assert any(u.status == "failed" for u in tool_progress)
 
 
+async def test_offline_hook_mcp_tool_requires_permission():
+    """MCP server tools (e.g. mcp_idea_execute_tool) require permission — whitelist only allows known file tools."""
+    import hellp
+
+    sut = hellp.EchoAgent(
+        agent_t=lambda cfg: FakeAgent(config=None, responses=[]),
+        agent_config_t=FakeConfig,
+    )
+    await sut.initialize(protocol_version=1)
+
+    client = AsyncMock(spec=Client)
+    client.request_permission.return_value = MagicMock(
+        outcome=MagicMock(option_id="approve")
+    )
+    sut.on_connect(conn=client)
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    token = hellp.current_session_id.set(sid)
+    try:
+        from google.antigravity.hooks.hooks import OperationContext, TurnContext, SessionContext
+        op_ctx = OperationContext(TurnContext(SessionContext()))
+
+        tc = agy_types.ToolCall(id="tc-mcp", name="mcp_idea_execute_tool", args={"command": "echo hi"})
+        pre_hook = hellp.MyPreToolCallDecideHook(sut)
+        result = await pre_hook.run(op_ctx, tc)
+        assert result.allow is True
+    finally:
+        hellp.current_session_id.reset(token)
+
+    client.request_permission.assert_called_once()
+
+
 async def test_offline_tool_without_session_context():
     """Tool functions should return an error string, not crash, when no session context is set."""
     import hellp
