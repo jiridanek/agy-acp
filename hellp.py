@@ -63,7 +63,7 @@ from acp.schema import (
     SessionModelState,
     SetSessionConfigOptionResponse, SetSessionModeResponse,
     SetSessionModelResponse, Usage,
-    ForkSessionResponse, ResumeSessionResponse,
+    Cost, ForkSessionResponse, ResumeSessionResponse,
     SessionCapabilities, SessionCloseCapabilities,
     SessionForkCapabilities, SessionResumeCapabilities,
     RequestPermissionRequest, RequestPermissionResponse,
@@ -88,6 +88,30 @@ _DEFAULT_MODEL_ID = "gemini-3.5-flash"
 
 _THINKING_LEVELS = ["minimal", "low", "medium", "high"]
 _DEFAULT_THINKING_LEVEL = "medium"
+
+# USD per 1M tokens (input, output). Source: ai.google.dev/pricing
+_MODEL_PRICING: dict[str, tuple[float, float]] = {
+    "gemini-3.5-flash": (1.50, 9.00),
+    "gemini-3.1-pro-preview": (2.00, 12.00),
+    "gemini-3.1-pro-preview-customtools": (2.00, 12.00),
+    "gemini-3.1-flash-lite": (0.25, 1.50),
+    "gemini-2.5-pro": (1.25, 10.00),
+    "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-2.5-flash-lite": (0.10, 0.40),
+}
+
+# Pro models: input 2x, output 1.5x when context exceeds 200k tokens
+_LONG_CONTEXT_THRESHOLD = 200_000
+
+
+def _get_token_rates(model_id: str, total_context_tokens: int) -> tuple[float, float] | None:
+    pricing = _MODEL_PRICING.get(model_id)
+    if not pricing:
+        return None
+    base_in, base_out = pricing
+    if "pro" in model_id and total_context_tokens > _LONG_CONTEXT_THRESHOLD:
+        return (base_in * 2.0, base_out * 1.5)
+    return (base_in, base_out)
 
 
 class SessionStore:
@@ -367,6 +391,7 @@ class EchoAgent(Agent):
         self._session_thinking_levels: dict[str, str] = {}
         self._session_additional_dirs: dict[str, list[str]] = {}
         self._session_mcp_servers: dict[str, list] = {}
+        self._session_cumulative_cost: dict[str, float] = {}
         self._last_file_edits: dict[tuple[str, str], dict[str, str | None]] = {}
         self._last_terminal_ids: dict[str, str] = {}
 
@@ -388,6 +413,7 @@ class EchoAgent(Agent):
         self._session_thinking_levels.pop(session_id, None)
         self._session_additional_dirs.pop(session_id, None)
         self._session_mcp_servers.pop(session_id, None)
+        self._session_cumulative_cost.pop(session_id, None)
         self._last_terminal_ids.pop(session_id, None)
         for key in [k for k in self._last_file_edits if k[0] == session_id]:
             del self._last_file_edits[key]
@@ -1007,12 +1033,25 @@ class EchoAgent(Agent):
                         cached_read_tokens=meta.cached_content_token_count,
                     )
                     used = meta.total_token_count or 0
+                    model_id = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
+                    rates = _get_token_rates(model_id, meta.prompt_token_count or 0)
+                    cost = None
+                    if rates:
+                        in_rate, out_rate = rates
+                        turn_cost = (
+                            (meta.prompt_token_count or 0) * in_rate
+                            + (meta.candidates_token_count or 0) * out_rate
+                        ) / 1_000_000
+                        cumulative = self._session_cumulative_cost.get(session_id, 0.0) + turn_cost
+                        self._session_cumulative_cost[session_id] = cumulative
+                        cost = Cost(amount=round(cumulative, 6), currency="USD")
                     await self._conn.session_update(
                         session_id=session_id,
                         update=UsageUpdate(
                             session_update="usage_update",
                             size=max(used, 1),
                             used=used,
+                            cost=cost,
                         ),
                     )
         except Exception:

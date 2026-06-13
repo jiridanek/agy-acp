@@ -637,6 +637,152 @@ async def test_offline_usage_tracking():
     assert reply.stop_reason == "end_turn"
 
 
+async def test_offline_cost_estimation():
+    """Cost is computed from model pricing and included in UsageUpdate."""
+    import hellp
+
+    chunks = [agy_types.Text(step_index=0, text="Hi")]
+
+    conv_mock = MagicMock()
+    conv_mock.last_turn_usage = MagicMock(
+        prompt_token_count=1000,
+        candidates_token_count=500,
+        total_token_count=1500,
+        thoughts_token_count=0,
+        cached_content_token_count=0,
+    )
+
+    class CostFakeAgent:
+        def __init__(self, config): pass
+        def register_hook(self, hook): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+        @property
+        def conversation_id(self): return None
+        async def chat(self, prompt):
+            async def stream():
+                for c in chunks:
+                    yield c
+            return agy_types.ChatResponse(stream(), conversation=conv_mock)
+
+    sut = hellp.EchoAgent(agent_t=CostFakeAgent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+    # default model is gemini-3.5-flash: (1.50, 9.00) per 1M tokens
+    reply = await sut.prompt(
+        [TextContentBlock(type="text", text="test")],
+        session_id=sid,
+    )
+    assert reply.stop_reason == "end_turn"
+
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    usage_updates = [u for u in updates if u.session_update == "usage_update"]
+    assert len(usage_updates) == 1
+    assert usage_updates[0].cost is not None
+    assert usage_updates[0].cost.currency == "USD"
+    # 1000 * 1.50/1M + 500 * 9.00/1M = 0.0015 + 0.0045 = 0.006
+    assert abs(usage_updates[0].cost.amount - 0.006) < 1e-8
+
+
+async def test_offline_cost_pro_long_context_surcharge():
+    """Pro models over 200k tokens get 2x input, 1.5x output surcharge."""
+    import hellp
+
+    conv_mock = MagicMock()
+    conv_mock.last_turn_usage = MagicMock(
+        prompt_token_count=300_000,
+        candidates_token_count=1000,
+        total_token_count=301_000,
+        thoughts_token_count=0,
+        cached_content_token_count=0,
+    )
+
+    class CostProAgent:
+        def __init__(self, config): pass
+        def register_hook(self, hook): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+        @property
+        def conversation_id(self): return None
+        async def chat(self, prompt):
+            async def stream():
+                yield agy_types.Text(step_index=0, text="Hi")
+            return agy_types.ChatResponse(stream(), conversation=conv_mock)
+
+    sut = hellp.EchoAgent(agent_t=CostProAgent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+    sut._session_models[sid] = "gemini-2.5-pro"
+
+    await sut.prompt([TextContentBlock(type="text", text="test")], session_id=sid)
+
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    usage_updates = [u for u in updates if u.session_update == "usage_update"]
+    assert len(usage_updates) == 1
+    # gemini-2.5-pro base: (1.25, 10.00), surcharge: (2.50, 15.00)
+    # 300000 * 2.50/1M + 1000 * 15.00/1M = 0.75 + 0.015 = 0.765
+    assert abs(usage_updates[0].cost.amount - 0.765) < 1e-6
+
+
+async def test_offline_cost_unknown_model():
+    """Unknown model produces no cost (cost=None)."""
+    import hellp
+
+    chunks = [agy_types.Text(step_index=0, text="Hi")]
+
+    conv_mock = MagicMock()
+    conv_mock.last_turn_usage = MagicMock(
+        prompt_token_count=100,
+        candidates_token_count=50,
+        total_token_count=150,
+        thoughts_token_count=0,
+        cached_content_token_count=0,
+    )
+
+    class CostFakeAgent2:
+        def __init__(self, config): pass
+        def register_hook(self, hook): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+        @property
+        def conversation_id(self): return None
+        async def chat(self, prompt):
+            async def stream():
+                for c in chunks:
+                    yield c
+            return agy_types.ChatResponse(stream(), conversation=conv_mock)
+
+    sut = hellp.EchoAgent(agent_t=CostFakeAgent2, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+    sut._session_models[sid] = "unknown-model-xyz"
+
+    await sut.prompt(
+        [TextContentBlock(type="text", text="test")],
+        session_id=sid,
+    )
+
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    usage_updates = [u for u in updates if u.session_update == "usage_update"]
+    assert len(usage_updates) == 1
+    assert usage_updates[0].cost is None
+
+
 async def test_offline_cancel():
     """Cancel mid-stream should return stop_reason='cancelled'."""
     import hellp
