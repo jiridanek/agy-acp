@@ -14,6 +14,7 @@ from uuid import uuid4
 
 import google.antigravity as agy
 from google.antigravity.hooks.hooks import PostToolCallHook, PreToolCallDecideHook, HookContext
+from google.antigravity.hooks import policy as agy_policy
 from google.antigravity.types import HookResult
 
 log = logging.getLogger(__name__)
@@ -260,10 +261,10 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
         self.echo_agent = echo_agent
 
     async def run(self, context: HookContext, data: agy.types.ToolCall) -> HookResult:
-        session_id = current_session_id.get(None)
+        session_id = current_session_id.get(None) or self.echo_agent._active_session_id
         if not session_id:
-            log.warning("No session ID found in context for tool call %s", data.name)
-            return HookResult(allow=True)
+            log.warning("No session ID found in context for tool call %s — denying", data.name)
+            return HookResult(allow=False, message="No active session context")
 
         tool_call_id = data.id or uuid4().hex
         kind = _tool_kind(str(data.name))
@@ -271,8 +272,6 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
         if isinstance(data.args, dict) and "path" in data.args:
             locations = [ToolCallLocation(path=data.args["path"])]
 
-        # Start ACP tool call tracking and notify client
-        # https://github.com/google-antigravity/antigravity-sdk-python/tree/main/examples/deep_dives/host_tool_hooks.py
         start = self.echo_agent._tracker.start(
             tool_call_id,
             title=_tool_title(str(data.name), data.args),
@@ -286,6 +285,10 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
         context.set("acp_tc_id", tool_call_id)
 
         log.debug("Intercepted tool call %s in session %s", data.name, session_id)
+
+        # File tools auto-allow; only run_command requires IDE permission
+        if str(data.name) != "run_command":
+            return HookResult(allow=True)
 
         async def requester(request: RequestPermissionRequest) -> RequestPermissionResponse:
             return await self.echo_agent._conn.request_permission(
@@ -314,7 +317,8 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
             )
             outcome = resp.outcome
             if outcome is None:
-                return HookResult(allow=False, message="Permission rejected (no outcome)")
+                await self._mark_denied(session_id, tool_call_id)
+                return HookResult(allow=False, message="The user declined this command. Ask what they'd like instead.")
 
             if isinstance(outcome, dict):
                 option_id = outcome.get("optionId") or outcome.get("option_id")
@@ -326,10 +330,22 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
                 return HookResult(allow=True)
             else:
                 log.debug("Tool call %s rejected/cancelled", data.name)
-                return HookResult(allow=False, message="Permission rejected by user")
+                await self._mark_denied(session_id, tool_call_id)
+                return HookResult(allow=False, message="The user declined this command. Ask what they'd like instead.")
         except Exception as e:
             log.exception("Error requesting permission via broker")
             return HookResult(allow=False, message=f"Internal permission broker error: {e}")
+
+    async def _mark_denied(self, session_id: str, tool_call_id: str) -> None:
+        try:
+            progress = self.echo_agent._tracker.progress(
+                tool_call_id, status="failed",
+                content=[tool_content(text_block("Denied by user"))],
+            )
+            await self.echo_agent._conn.session_update(
+                session_id=session_id, update=progress)
+        except KeyError:
+            log.debug("_mark_denied: unknown tracker id %s", tool_call_id)
 
 
 class MyPostToolCallHook(PostToolCallHook):
@@ -339,7 +355,7 @@ class MyPostToolCallHook(PostToolCallHook):
         self.echo_agent = echo_agent
 
     async def run(self, context: HookContext, data: agy.types.ToolResult) -> None:
-        session_id = current_session_id.get(None)
+        session_id = current_session_id.get(None) or self.echo_agent._active_session_id
         tc_id = context.get("acp_tc_id")
         if not session_id or not tc_id:
             return
@@ -540,6 +556,7 @@ class EchoAgent(Agent):
                         agy_types.BuiltinTools.RUN_COMMAND,
                     ]
                 ),
+                policies=[agy_policy.allow_all()],
                 tools=[self.view_file, self.create_file, self.edit_file, self.run_command],
                 gemini_config=agy_types.GeminiConfig(
                     models=agy_types.ModelConfig(
@@ -822,6 +839,7 @@ class EchoAgent(Agent):
                     agy_types.BuiltinTools.RUN_COMMAND,
                 ]
             ),
+            policies=[agy_policy.allow_all()],
             tools=[view_file, create_file, edit_file, run_command],
             save_dir=_DEFAULT_SAVE_DIR,
         )

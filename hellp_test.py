@@ -207,7 +207,8 @@ async def test_offline_tool_works_without_contextvar():
 
 
 async def test_offline_hook_tool_tracking():
-    """Verify PreToolCallDecideHook + PostToolCallHook send start and completed updates."""
+    """Verify PreToolCallDecideHook + PostToolCallHook send start and completed updates.
+    File tools (view_file) auto-allow without requesting permission."""
     import hellp
 
     sut = hellp.EchoAgent(
@@ -217,10 +218,6 @@ async def test_offline_hook_tool_tracking():
     await sut.initialize(protocol_version=1)
 
     client = AsyncMock(spec=Client)
-    # Auto-approve permissions
-    client.request_permission.return_value = MagicMock(
-        outcome=MagicMock(option_id="approve")
-    )
     sut.on_connect(conn=client)
     session = await sut.new_session(cwd=".")
     sid = session.session_id
@@ -241,6 +238,9 @@ async def test_offline_hook_tool_tracking():
     finally:
         hellp.current_session_id.reset(token)
 
+    # File tools should NOT trigger permission request
+    client.request_permission.assert_not_called()
+
     updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
     tool_starts = [u for u in updates if u.session_update == "tool_call"]
     tool_progress = [u for u in updates if u.session_update == "tool_call_update"]
@@ -249,6 +249,75 @@ async def test_offline_hook_tool_tracking():
     assert tool_starts[0].kind == "read"
     assert len(tool_progress) == 1
     assert tool_progress[0].status == "completed"
+
+
+async def test_offline_hook_run_command_requires_permission():
+    """run_command tool calls require IDE permission approval."""
+    import hellp
+
+    sut = hellp.EchoAgent(
+        agent_t=lambda cfg: FakeAgent(config=None, responses=[]),
+        agent_config_t=FakeConfig,
+    )
+    await sut.initialize(protocol_version=1)
+
+    client = AsyncMock(spec=Client)
+    client.request_permission.return_value = MagicMock(
+        outcome=MagicMock(option_id="approve")
+    )
+    sut.on_connect(conn=client)
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    token = hellp.current_session_id.set(sid)
+    try:
+        from google.antigravity.hooks.hooks import OperationContext, TurnContext, SessionContext
+        op_ctx = OperationContext(TurnContext(SessionContext()))
+
+        tc = agy_types.ToolCall(id="tc2", name="run_command", args={"command": "ls"})
+        pre_hook = hellp.MyPreToolCallDecideHook(sut)
+        result = await pre_hook.run(op_ctx, tc)
+        assert result.allow is True
+    finally:
+        hellp.current_session_id.reset(token)
+
+    client.request_permission.assert_called_once()
+
+
+async def test_offline_hook_run_command_denied():
+    """Denied run_command marks tracker as failed and returns clear message."""
+    import hellp
+
+    sut = hellp.EchoAgent(
+        agent_t=lambda cfg: FakeAgent(config=None, responses=[]),
+        agent_config_t=FakeConfig,
+    )
+    await sut.initialize(protocol_version=1)
+
+    client = AsyncMock(spec=Client)
+    client.request_permission.return_value = MagicMock(
+        outcome=MagicMock(option_id="cancelled")
+    )
+    sut.on_connect(conn=client)
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    token = hellp.current_session_id.set(sid)
+    try:
+        from google.antigravity.hooks.hooks import OperationContext, TurnContext, SessionContext
+        op_ctx = OperationContext(TurnContext(SessionContext()))
+
+        tc = agy_types.ToolCall(id="tc3", name="run_command", args={"command": "rm -rf /"})
+        pre_hook = hellp.MyPreToolCallDecideHook(sut)
+        result = await pre_hook.run(op_ctx, tc)
+        assert result.allow is False
+        assert "declined" in result.message
+    finally:
+        hellp.current_session_id.reset(token)
+
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    tool_progress = [u for u in updates if u.session_update == "tool_call_update"]
+    assert any(u.status == "failed" for u in tool_progress)
 
 
 async def test_offline_tool_without_session_context():
@@ -314,7 +383,7 @@ async def test_offline_empty_prompt_returns_early():
 
 
 async def test_offline_custom_tools_disabled_and_registered():
-    """Verify built-in tools are disabled and custom file/shell tools are registered."""
+    """Verify built-in tools are disabled, custom tools are registered, and policies=[allow_all()]."""
     import hellp
     from google.antigravity.types import BuiltinTools
 
@@ -343,6 +412,10 @@ async def test_offline_custom_tools_disabled_and_registered():
     assert "create_file" in registered_tools
     assert "edit_file" in registered_tools
     assert "run_command" in registered_tools
+    # SDK-level policy includes allow_all so our ACP hook handles permission
+    # (SDK may add its own policies like workspace_only on top)
+    policy_names = [p.name for p in config.policies]
+    assert "allow_all" in policy_names
 
 
 async def test_offline_plan_updates_numbered_lists():
