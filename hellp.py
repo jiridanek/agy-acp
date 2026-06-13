@@ -413,6 +413,7 @@ class EchoAgent(Agent):
         self._session_cumulative_cost: dict[str, float] = {}
         self._last_file_edits: dict[tuple[str, str], dict[str, str | None]] = {}
         self._last_terminal_ids: dict[str, str] = {}
+        self._client_capabilities: ClientCapabilities | None = None
 
     def on_connect(self, conn: Client) -> None:
         log.debug("on_connect")
@@ -548,17 +549,11 @@ class EchoAgent(Agent):
 
         from google.antigravity import types as agy_types
         try:
+            disabled_tools, custom_tools = self._build_tools_config()
             config = self._agent_config_t(
-                capabilities=agy_types.CapabilitiesConfig(
-                    disabled_tools=[
-                        agy_types.BuiltinTools.VIEW_FILE,
-                        agy_types.BuiltinTools.CREATE_FILE,
-                        agy_types.BuiltinTools.EDIT_FILE,
-                        agy_types.BuiltinTools.RUN_COMMAND,
-                    ]
-                ),
+                capabilities=agy_types.CapabilitiesConfig(disabled_tools=disabled_tools),
                 policies=[agy_policy.allow_all()],
-                tools=[self.view_file, self.create_file, self.edit_file, self.run_command],
+                tools=custom_tools,
                 gemini_config=agy_types.GeminiConfig(
                     models=agy_types.ModelConfig(
                         default=agy_types.ModelEntry(
@@ -760,6 +755,33 @@ class EchoAgent(Agent):
             config_options=self._build_config_options(session_id),
         )
 
+    def _check_client_caps(self) -> tuple[bool, bool, bool]:
+        """Returns (can_read_files, can_write_files, can_terminal) from stored client capabilities."""
+        caps = self._client_capabilities
+        fs = getattr(caps, "fs", None) if caps else None
+        can_read = bool(getattr(fs, "read_text_file", False)) if fs else False
+        can_write = bool(getattr(fs, "write_text_file", False)) if fs else False
+        can_terminal = bool(getattr(caps, "terminal", False)) if caps else False
+        return can_read, can_write, can_terminal
+
+    def _build_tools_config(self) -> tuple[list, list]:
+        """Build disabled_tools and custom tools lists based on client capabilities."""
+        from google.antigravity import types as agy_types
+        can_read, can_write, can_terminal = self._check_client_caps()
+        disabled = []
+        tools = []
+        if can_read:
+            disabled.append(agy_types.BuiltinTools.VIEW_FILE)
+            tools.append(self.view_file)
+        if can_write:
+            disabled.append(agy_types.BuiltinTools.CREATE_FILE)
+            disabled.append(agy_types.BuiltinTools.EDIT_FILE)
+            tools.extend([self.create_file, self.edit_file])
+        if can_terminal:
+            disabled.append(agy_types.BuiltinTools.RUN_COMMAND)
+            tools.append(self.run_command)
+        return disabled, tools
+
     async def initialize(
         self,
         protocol_version: int,
@@ -767,7 +789,8 @@ class EchoAgent(Agent):
         client_info: Implementation | None = None,
         **kwargs: Any,
     ) -> InitializeResponse:
-        log.debug("initialize")
+        log.debug("initialize client_info=%s client_capabilities=%s", client_info, client_capabilities)
+        self._client_capabilities = client_capabilities
 
         from google.antigravity import types as agy_types
 
@@ -831,17 +854,11 @@ class EchoAgent(Agent):
         self.edit_file = edit_file
         self.run_command = run_command
 
+        disabled_tools, custom_tools = self._build_tools_config()
         config = self._agent_config_t(
-            capabilities=agy_types.CapabilitiesConfig(
-                disabled_tools=[
-                    agy_types.BuiltinTools.VIEW_FILE,
-                    agy_types.BuiltinTools.CREATE_FILE,
-                    agy_types.BuiltinTools.EDIT_FILE,
-                    agy_types.BuiltinTools.RUN_COMMAND,
-                ]
-            ),
+            capabilities=agy_types.CapabilitiesConfig(disabled_tools=disabled_tools),
             policies=[agy_policy.allow_all()],
-            tools=[view_file, create_file, edit_file, run_command],
+            tools=custom_tools,
             save_dir=_DEFAULT_SAVE_DIR,
         )
         self._agent = self._agent_t(config)
