@@ -912,6 +912,34 @@ async def test_offline_fork_capability_declared():
     assert resp.agent_capabilities.session_capabilities.resume is not None
 
 
+async def test_offline_help_command():
+    """/help command lists available commands without calling the LLM."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    client.reset_mock()
+    reply = await sut.prompt([TextContentBlock(type="text", text="/help")], session_id=sid)
+    assert reply.stop_reason == "end_turn"
+
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    message_updates = [u for u in updates if u.session_update == "agent_message_chunk"]
+    assert len(message_updates) == 1
+    assert "/reset" in message_updates[0].content.text
+    assert "/help" in message_updates[0].content.text
+
+    # No LLM call — FakeAgent has no responses queued
+    assert fake_agent._call_index == 0
+
+
 async def test_offline_agent_info_declared():
     """InitializeResponse includes agent name, version, and title."""
     import hellp

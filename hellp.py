@@ -788,6 +788,7 @@ class EchoAgent(Agent):
             session_id=session_id,
             update=update_available_commands([
                 AvailableCommand(name="reset", description="Clear conversation history"),
+                AvailableCommand(name="help", description="Show available commands"),
             ]),
         )
 
@@ -848,6 +849,13 @@ class EchoAgent(Agent):
             await self._conn.session_update(
                 session_id=session_id,
                 update=update_agent_message(text_block("Conversation reset.")))
+            return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
+
+        if first_text.strip() in ("/help", "help"):
+            help_text = "Available commands:\n- /reset — Clear conversation history\n- /help — Show this message"
+            await self._conn.session_update(
+                session_id=session_id,
+                update=update_agent_message(text_block(help_text)))
             return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
 
         if self._session_modes.get(session_id) == "plan":
