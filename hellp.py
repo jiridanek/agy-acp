@@ -57,6 +57,7 @@ from acp.schema import (
     AvailableCommand, CloseSessionResponse,
     CurrentModeUpdate, EnvVarAuthMethod,
     ListSessionsResponse, LoadSessionResponse,
+    McpCapabilities,
     ModelInfo, PromptCapabilities, SessionInfo, SessionInfoUpdate,
     SessionConfigOptionSelect, SessionConfigSelectOption,
     SessionListCapabilities, SessionMode, SessionModeState,
@@ -837,6 +838,7 @@ class EchoAgent(Agent):
                     resume=SessionResumeCapabilities(),
                 ),
                 load_session=True,
+                mcp_capabilities=McpCapabilities(http=True, sse=True),
             ),
             auth_methods=[
                 EnvVarAuthMethod(
