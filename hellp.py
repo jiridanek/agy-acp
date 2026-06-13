@@ -615,7 +615,8 @@ class EchoAgent(Agent):
 
         conv_id = stored.get("conversation_id")
         if conv_id:
-            log.debug("resuming conversation %s for session %s", conv_id, session_id)
+            log.debug("restoring conversation %s for session %s", conv_id, session_id)
+            await self._rebuild_agent(session_id, conversation_id=conv_id)
 
         asyncio.ensure_future(self._send_available_commands(session_id))
 

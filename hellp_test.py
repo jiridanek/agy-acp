@@ -940,6 +940,39 @@ async def test_offline_help_command():
     assert fake_agent._call_index == 0
 
 
+async def test_offline_load_session_rebuilds_with_conversation_id(tmp_path):
+    """load_session rebuilds the agent with saved conversation_id."""
+    import hellp
+
+    store = hellp.SessionStore(path=tmp_path / "sessions.json")
+    store.save("sess-1", {
+        "session_id": "sess-1",
+        "conversation_id": "conv-xyz",
+        "cwd": "/project",
+        "mode": "agent",
+        "model": "gemini-3.5-flash",
+        "thinking_level": "medium",
+        "title": "Test",
+        "updated_at": "2026-01-01T00:00:00Z",
+    })
+
+    configs_seen = []
+    def tracking_config_t(**kwargs):
+        configs_seen.append(kwargs)
+        return FakeConfig(**kwargs)
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=tracking_config_t, store=store)
+    await sut.initialize(protocol_version=1)
+    sut.on_connect(conn=MagicMock(spec=Client))
+
+    await sut.load_session(cwd="/project", session_id="sess-1")
+
+    # _rebuild_agent should have been called with conversation_id
+    assert len(configs_seen) >= 1
+    assert configs_seen[-1].get("conversation_id") == "conv-xyz"
+
+
 async def test_offline_agent_info_declared():
     """InitializeResponse includes agent name, version, and title."""
     import hellp
