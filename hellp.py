@@ -171,10 +171,64 @@ class SessionStore:
 def _tool_title(name: str, args: Any) -> str:
     n = str(name)
     if isinstance(args, dict):
-        for key in ("path", "command", "query", "pattern", "directory"):
+        for key in ("path", "command", "command_line", "query", "pattern", "directory"):
             if key in args:
                 return f"{n}: {args[key]}"
+        # MCP tools: extract ServerName/ToolName from request_text
+        if n.startswith("mcp_"):
+            server, tool = _parse_mcp_request_text(args)
+            if server and tool:
+                return f"{tool} ({server})"
     return n
+
+
+def _parse_mcp_request_text(args: dict) -> tuple[str | None, str | None]:
+    """Extract ServerName and ToolName from MCP tool args' request_text JSON."""
+    request_text = args.get("request_text", "")
+    if request_text and "{" in request_text:
+        try:
+            start = request_text.index("{")
+            embedded = json.loads(request_text[start:])
+            return embedded.get("ServerName"), embedded.get("ToolName")
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return None, None
+
+
+def _permission_description(name: str, args: Any) -> str:
+    """Build a human-readable description of tool arguments for the permission dialog.
+
+    The title already identifies the tool, so this focuses on what's being passed to it.
+    """
+    if not isinstance(args, dict):
+        return ""
+
+    # Filter out SDK metadata keys that clutter the display
+    display_args = {k: v for k, v in args.items() if k != "request_text"}
+
+    # MCP tools: show the actual MCP arguments from request_text
+    if name.startswith("mcp_"):
+        request_text = args.get("request_text", "")
+        if request_text and "{" in request_text:
+            try:
+                start = request_text.index("{")
+                embedded = json.loads(request_text[start:])
+                mcp_args = embedded.get("Arguments", {})
+                if mcp_args:
+                    return "\n".join(f"- **{k}**: `{v}`" for k, v in mcp_args.items())
+                return "*(no arguments)*"
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+    # run_command: show working dir (command is already in the title)
+    if display_args.get("working_dir"):
+        return f"in `{display_args['working_dir']}`"
+
+    # Generic: list non-empty args as markdown
+    if display_args:
+        return "\n".join(f"- **{k}**: `{v}`" for k, v in display_args.items())
+
+    return ""
 
 
 def _tool_kind(name: str) -> str:
@@ -287,24 +341,17 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
         locations = None
         if isinstance(data.args, dict) and "path" in data.args:
             locations = [ToolCallLocation(path=data.args["path"])]
-
-        start = self.echo_agent._tracker.start(
-            tool_call_id,
-            title=_tool_title(str(data.name), data.args),
-            kind=kind,
-            locations=locations,
-            raw_input=data.args,
-        )
-        await self.echo_agent._conn.session_update(
-            session_id=session_id, update=start)
+        title = _tool_title(str(data.name), data.args)
 
         context.set("acp_tc_id", tool_call_id)
-
         log.debug("Intercepted tool call %s in session %s", data.name, session_id)
 
         if str(data.name) in _AUTO_ALLOW_TOOLS:
+            await self._send_start(session_id, tool_call_id, title, kind, locations, data.args)
             return HookResult(allow=True)
 
+        # Permission required — show the approval dialog first, don't send
+        # the progress card yet (avoids duplicate cards in the IDE)
         async def requester(request: RequestPermissionRequest) -> RequestPermissionResponse:
             return await self.echo_agent._conn.request_permission(
                 options=request.options,
@@ -314,7 +361,7 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
 
         tool_call = ToolCallUpdate(
             tool_call_id=tool_call_id,
-            title=_tool_title(str(data.name), data.args),
+            title=title,
             kind=kind,
             raw_input=data.args,
         )
@@ -328,11 +375,10 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
             resp = await broker.request_for(
                 external_id=tool_call_id,
                 tool_call=tool_call,
-                description=f"Approve running {data.name} with arguments {data.args}?",
+                description=_permission_description(str(data.name), data.args),
             )
             outcome = resp.outcome
             if outcome is None:
-                await self._mark_denied(session_id, tool_call_id)
                 return HookResult(allow=False, message="The user declined this command. Ask what they'd like instead.")
 
             if isinstance(outcome, dict):
@@ -342,25 +388,28 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
 
             if option_id in ("approve", "approve_for_session"):
                 log.debug("Tool call %s permitted", data.name)
+                # Register tracker entry (for PostToolCallHook) but don't send
+                # a notification — the broker's request_for already showed the card
+                self.echo_agent._tracker.start(
+                    tool_call_id, title=title, kind=kind,
+                    locations=locations, raw_input=data.args,
+                )
                 return HookResult(allow=True)
             else:
                 log.debug("Tool call %s rejected/cancelled", data.name)
-                await self._mark_denied(session_id, tool_call_id)
                 return HookResult(allow=False, message="The user declined this command. Ask what they'd like instead.")
         except Exception as e:
             log.exception("Error requesting permission via broker")
             return HookResult(allow=False, message=f"Internal permission broker error: {e}")
 
-    async def _mark_denied(self, session_id: str, tool_call_id: str) -> None:
-        try:
-            progress = self.echo_agent._tracker.progress(
-                tool_call_id, status="failed",
-                content=[tool_content(text_block("Denied by user"))],
-            )
-            await self.echo_agent._conn.session_update(
-                session_id=session_id, update=progress)
-        except KeyError:
-            log.debug("_mark_denied: unknown tracker id %s", tool_call_id)
+    async def _send_start(self, session_id, tool_call_id, title, kind, locations, raw_input):
+        start = self.echo_agent._tracker.start(
+            tool_call_id, title=title, kind=kind,
+            locations=locations, raw_input=raw_input,
+        )
+        await self.echo_agent._conn.session_update(
+            session_id=session_id, update=start)
+
 
 
 class MyPostToolCallHook(PostToolCallHook):

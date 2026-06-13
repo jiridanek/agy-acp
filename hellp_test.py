@@ -77,6 +77,68 @@ class FakeAgent:
         return agy_types.ChatResponse(stream(), conversation=MagicMock())
 
 
+def test_tool_title_command_line():
+    """_tool_title extracts command_line (SDK built-in run_command key)."""
+    from hellp import _tool_title
+    assert _tool_title("run_command", {"command_line": "git status", "working_dir": "/tmp"}) == "run_command: git status"
+
+
+def test_tool_title_command():
+    """_tool_title extracts command (our custom closure key)."""
+    from hellp import _tool_title
+    assert _tool_title("run_command", {"command": "ls -la"}) == "run_command: ls -la"
+
+
+def test_tool_title_mcp():
+    """_tool_title extracts ServerName/ToolName from MCP request_text."""
+    from hellp import _tool_title
+    args = {
+        "request_text": 'Requesting permission with args '
+        '{"Arguments": {}, "ServerName": "github", "ToolName": "get_me", '
+        '"toolAction": "Call get_me on github", "toolSummary": "Calling get_me MCP tool"}'
+    }
+    assert _tool_title("mcp_github_get_me", args) == "get_me (github)"
+
+
+def test_permission_description_run_command():
+    """_permission_description shows working dir for run_command (command is in title)."""
+    from hellp import _permission_description
+    desc = _permission_description("run_command", {"command_line": "git status", "working_dir": "/project"})
+    assert desc == "in `/project`"
+
+
+def test_permission_description_mcp_tool_with_args():
+    """_permission_description shows MCP tool arguments."""
+    from hellp import _permission_description
+    args = {
+        "request_text": 'Requesting permission with args '
+        '{"Arguments": {"owner": "google", "repo": "antigravity"}, '
+        '"ServerName": "github", "ToolName": "get_repo"}'
+    }
+    desc = _permission_description("mcp_github_get_repo", args)
+    assert "**owner**" in desc
+    assert "`google`" in desc
+
+
+def test_permission_description_mcp_tool_no_args():
+    """_permission_description shows 'no arguments' for argless MCP tools."""
+    from hellp import _permission_description
+    args = {
+        "request_text": 'Requesting permission with args '
+        '{"Arguments": {}, "ServerName": "github", "ToolName": "get_me"}'
+    }
+    desc = _permission_description("mcp_github_get_me", args)
+    assert "no arguments" in desc
+
+
+def test_permission_description_generic():
+    """_permission_description lists args as markdown for unknown tools."""
+    from hellp import _permission_description
+    desc = _permission_description("some_tool", {"foo": "bar"})
+    assert "**foo**" in desc
+    assert "`bar`" in desc
+
+
 class FakeConfig:
     def __init__(self, **kwargs):
         pass
@@ -291,7 +353,7 @@ async def test_offline_hook_run_command_requires_permission():
 
 
 async def test_offline_hook_run_command_denied():
-    """Denied run_command marks tracker as failed and returns clear message."""
+    """Denied run_command returns clear message without sending a start notification."""
     import hellp
 
     sut = hellp.EchoAgent(
@@ -321,9 +383,10 @@ async def test_offline_hook_run_command_denied():
     finally:
         hellp.current_session_id.reset(token)
 
+    # Denied tools should NOT send a tool_call start notification (avoids duplicate cards)
     updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
-    tool_progress = [u for u in updates if u.session_update == "tool_call_update"]
-    assert any(u.status == "failed" for u in tool_progress)
+    tool_starts = [u for u in updates if u.session_update == "tool_call"]
+    assert len(tool_starts) == 0
 
 
 async def test_offline_hook_mcp_tool_requires_permission():
