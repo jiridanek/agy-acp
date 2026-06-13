@@ -720,10 +720,46 @@ async def test_offline_model_switching():
     assert session.models.current_model_id == "gemini-3.5-flash"
     assert len(session.models.available_models) == 7
 
-    # Switch model
+    # Switch model — agent should be rebuilt
+    configs_seen = []
+    original_config_t = FakeConfig
+    def tracking_config_t(**kwargs):
+        configs_seen.append(kwargs)
+        return original_config_t(**kwargs)
+    sut._agent_config_t = tracking_config_t
+
     resp = await sut.set_session_model(model_id="gemini-2.5-flash", session_id=sid)
     assert resp is not None
     assert sut._session_models[sid] == "gemini-2.5-flash"
+    assert len(configs_seen) == 1
+    assert configs_seen[0]["model"] == "gemini-2.5-flash"
+
+
+async def test_offline_rebuild_passes_thinking_level():
+    """Changing thinking level via config option rebuilds the agent with correct config."""
+    import hellp
+
+    configs_seen = []
+    original_config_t = FakeConfig
+    def tracking_config_t(**kwargs):
+        configs_seen.append(kwargs)
+        return original_config_t(**kwargs)
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+    sut._agent_config_t = tracking_config_t
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    await sut.set_config_option(config_id="thinking_level", session_id=sid, value="high")
+    assert len(configs_seen) == 1
+    gemini_cfg = configs_seen[0]["gemini_config"]
+    assert gemini_cfg.models.default.generation.thinking_level.value == "high"
 
 
 async def test_offline_model_persisted_in_session(tmp_path):

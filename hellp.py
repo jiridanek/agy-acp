@@ -407,8 +407,10 @@ class EchoAgent(Agent):
             )
         elif config_id == "model" and isinstance(value, str):
             self._session_models[session_id] = value
+            await self._rebuild_agent(session_id)
         elif config_id == "thinking_level" and isinstance(value, str):
             self._session_thinking_levels[session_id] = value
+            await self._rebuild_agent(session_id)
         return SetSessionConfigOptionResponse(config_options=self._build_config_options(session_id))
 
     async def authenticate(self, method_id: str, **kwargs: Any) -> AuthenticateResponse | None:
@@ -426,11 +428,48 @@ class EchoAgent(Agent):
             available_models=_AVAILABLE_MODELS,
         )
 
+    async def _rebuild_agent(self, session_id: str) -> None:
+        """Tear down and recreate the Antigravity agent with current model/thinking settings."""
+        model_id = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
+        thinking = self._session_thinking_levels.get(session_id, _DEFAULT_THINKING_LEVEL)
+
+        await self._agent.__aexit__(None, None, None)
+
+        from google.antigravity import types as agy_types
+        config = self._agent_config_t(
+            model=model_id,
+            capabilities=agy_types.CapabilitiesConfig(
+                disabled_tools=[
+                    agy_types.BuiltinTools.VIEW_FILE,
+                    agy_types.BuiltinTools.CREATE_FILE,
+                    agy_types.BuiltinTools.EDIT_FILE,
+                    agy_types.BuiltinTools.RUN_COMMAND,
+                ]
+            ),
+            tools=[self.view_file, self.create_file, self.edit_file, self.run_command],
+            gemini_config=agy_types.GeminiConfig(
+                models=agy_types.ModelConfig(
+                    default=agy_types.ModelEntry(
+                        name=model_id,
+                        generation=agy_types.GenerationConfig(
+                            thinking_level=agy_types.ThinkingLevel(thinking),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        self._agent = self._agent_t(config)
+        self._agent.register_hook(MyPreToolCallDecideHook(self))
+        self._agent.register_hook(MyPostToolCallHook(self))
+        await self._agent.__aenter__()
+        log.debug("rebuilt agent with model=%s thinking=%s", model_id, thinking)
+
     async def set_session_model(
         self, model_id: str, session_id: str, **kwargs: Any,
     ) -> SetSessionModelResponse | None:
         log.debug("set_session_model model=%s session=%s", model_id, session_id)
         self._session_models[session_id] = model_id
+        await self._rebuild_agent(session_id)
         return SetSessionModelResponse()
 
     async def list_sessions(
