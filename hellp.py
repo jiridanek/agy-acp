@@ -550,6 +550,15 @@ class EchoAgent(Agent):
         self._last_exit_codes: dict[str, int] = {}
         self._last_usage: dict[str, dict] = {}
         self._client_capabilities: ClientCapabilities | None = None
+        self._client_info: Implementation | None = None
+
+    @property
+    def _is_intellij(self) -> bool:
+        return bool(
+            self._client_info
+            and getattr(self._client_info, "name", "")
+            and "JetBrains" in self._client_info.name
+        )
 
     def on_connect(self, conn: Client) -> None:
         log.debug("on_connect")
@@ -1021,6 +1030,7 @@ class EchoAgent(Agent):
             client_capabilities,
         )
         self._client_capabilities = client_capabilities
+        self._client_info = client_info
 
         from google.antigravity import types as agy_types
 
@@ -1274,11 +1284,11 @@ class EchoAgent(Agent):
 
         if name == "model":
             if arg:
+                if self._is_intellij:
+                    return "Model switching via `/model` is not supported in IntelliJ — use the Model dropdown in the bottom bar instead."
                 valid = {m.model_id for m in _AVAILABLE_MODELS}
                 if arg not in valid:
-                    return (
-                        f"Unknown model `{arg}`. Available: {', '.join(sorted(valid))}"
-                    )
+                    return f"Unknown model `{arg}`. Available: {', '.join(sorted(valid))}"
                 await self.set_config_option(
                     config_id="model", session_id=session_id, value=arg
                 )
@@ -1292,6 +1302,8 @@ class EchoAgent(Agent):
 
         if name == "thinking":
             if arg:
+                if self._is_intellij:
+                    return "Thinking level switching via `/thinking` is not supported in IntelliJ — use the Thinking dropdown in the bottom bar instead."
                 if arg not in _THINKING_LEVELS:
                     return f"Unknown level `{arg}`. Available: {', '.join(_THINKING_LEVELS)}"
                 await self.set_config_option(
