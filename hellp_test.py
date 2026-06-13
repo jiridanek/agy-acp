@@ -1431,6 +1431,118 @@ async def test_offline_help_command():
     assert fake_agent._call_index == 0
 
 
+async def test_offline_cost_command():
+    """/cost shows model and cumulative cost."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+    sut._session_cumulative_cost[sid] = 0.042
+
+    reply = await sut.prompt([TextContentBlock(type="text", text="/cost")], session_id=sid)
+    assert reply.stop_reason == "end_turn"
+
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    msg = [u for u in updates if u.session_update == "agent_message_chunk"][0].content.text
+    assert "gemini-3.5-flash" in msg
+    assert "0.042" in msg
+
+
+async def test_offline_model_command_show():
+    """/model with no arg shows current model and available models."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    reply = await sut.prompt([TextContentBlock(type="text", text="/model")], session_id=sid)
+    assert reply.stop_reason == "end_turn"
+
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    msg = [u for u in updates if u.session_update == "agent_message_chunk"][0].content.text
+    assert "gemini-3.5-flash" in msg
+    assert "gemini-2.5-pro" in msg
+
+
+async def test_offline_model_command_switch():
+    """/model <id> switches the model."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    reply = await sut.prompt([TextContentBlock(type="text", text="/model gemini-2.5-flash")], session_id=sid)
+    assert reply.stop_reason == "end_turn"
+    assert sut._session_models[sid] == "gemini-2.5-flash"
+
+
+async def test_offline_thinking_command():
+    """/thinking shows and sets thinking level."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    # Show current
+    reply = await sut.prompt([TextContentBlock(type="text", text="/thinking")], session_id=sid)
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    msg = [u for u in updates if u.session_update == "agent_message_chunk"][0].content.text
+    assert "medium" in msg
+
+    # Set
+    reply = await sut.prompt([TextContentBlock(type="text", text="/thinking high")], session_id=sid)
+    assert sut._session_thinking_levels[sid] == "high"
+
+
+async def test_offline_clear_is_reset_alias():
+    """/clear works the same as /reset."""
+    import hellp
+
+    chunks = [agy_types.Text(step_index=0, text="response")]
+    fake_agent = FakeAgent(config=None, responses=[chunks])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+    sut._session_titles[sid] = "test"
+
+    reply = await sut.prompt([TextContentBlock(type="text", text="/clear")], session_id=sid)
+    assert reply.stop_reason == "end_turn"
+    assert sid not in sut._session_titles
+
+
 async def test_offline_load_session_rebuilds_with_conversation_id(tmp_path):
     """load_session rebuilds the agent with saved conversation_id."""
     import hellp

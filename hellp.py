@@ -482,6 +482,7 @@ class EchoAgent(Agent):
         self._last_file_edits: dict[tuple[str, str], dict[str, str | None]] = {}
         self._last_terminal_ids: dict[str, str] = {}
         self._last_exit_codes: dict[str, int] = {}
+        self._last_usage: dict[str, dict] = {}
         self._client_capabilities: ClientCapabilities | None = None
 
     def on_connect(self, conn: Client) -> None:
@@ -506,6 +507,7 @@ class EchoAgent(Agent):
         self._active_tasks.pop(session_id, None)
         self._last_terminal_ids.pop(session_id, None)
         self._last_exit_codes.pop(session_id, None)
+        self._last_usage.pop(session_id, None)
         for key in [k for k in self._last_file_edits if k[0] == session_id]:
             del self._last_file_edits[key]
         self._store.delete(session_id)
@@ -1016,9 +1018,81 @@ class EchoAgent(Agent):
             session_id=session_id,
             update=update_available_commands([
                 AvailableCommand(name="reset", description="Clear conversation history"),
+                AvailableCommand(name="clear", description="Clear conversation history"),
+                AvailableCommand(name="cost", description="Show session cost"),
+                AvailableCommand(name="usage", description="Show token usage"),
+                AvailableCommand(name="model", description="Show or switch model"),
+                AvailableCommand(name="thinking", description="Show or switch thinking level"),
+                AvailableCommand(name="compact", description="Summarize conversation and start fresh context"),
                 AvailableCommand(name="help", description="Show available commands"),
             ]),
         )
+
+    async def _handle_command(self, text: str, session_id: str) -> str | None:
+        """Handle slash commands. Returns response text, or None if not a command."""
+        cmd = text.lstrip("/").split(None, 1)
+        if not cmd:
+            return None
+        name, arg = cmd[0], cmd[1] if len(cmd) > 1 else ""
+
+        if name in ("reset", "clear"):
+            await self._rebuild_agent(session_id)
+            self._session_titles.pop(session_id, None)
+            return "Conversation reset."
+
+        if name == "help":
+            return (
+                "Available commands:\n"
+                "- `/reset` `/clear` — Clear conversation history\n"
+                "- `/cost` — Show session cost\n"
+                "- `/usage` — Show token usage from last turn\n"
+                "- `/model [id]` — Show or switch model\n"
+                "- `/thinking [level]` — Show or switch thinking level\n"
+                "- `/compact` — Summarize conversation and start fresh context\n"
+                "- `/help` — Show this message"
+            )
+
+        if name == "cost":
+            model = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
+            cost = self._session_cumulative_cost.get(session_id, 0.0)
+            return f"**Model:** {model}\n**Cumulative cost:** ${cost:.6f} USD"
+
+        if name == "usage":
+            usage = self._last_usage.get(session_id)
+            if not usage:
+                return "No usage data yet — send a prompt first."
+            lines = [f"**Last turn:**"]
+            for k, v in usage.items():
+                if v is not None:
+                    lines.append(f"- {k}: {v:,}")
+            cost = self._session_cumulative_cost.get(session_id, 0.0)
+            lines.append(f"\n**Cumulative cost:** ${cost:.6f} USD")
+            return "\n".join(lines)
+
+        if name == "model":
+            if arg:
+                valid = {m.model_id for m in _AVAILABLE_MODELS}
+                if arg not in valid:
+                    return f"Unknown model `{arg}`. Available: {', '.join(sorted(valid))}"
+                await self.set_config_option(config_id="model", session_id=session_id, value=arg)
+                return f"Switched to **{arg}**."
+            current = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
+            models = "\n".join(f"- {'**' if m.model_id == current else ''}`{m.model_id}`{'**' if m.model_id == current else ''} — {m.name}" for m in _AVAILABLE_MODELS)
+            return f"Current: **{current}**\n\n{models}"
+
+        if name == "thinking":
+            if arg:
+                if arg not in _THINKING_LEVELS:
+                    return f"Unknown level `{arg}`. Available: {', '.join(_THINKING_LEVELS)}"
+                await self.set_config_option(config_id="thinking_level", session_id=session_id, value=arg)
+                return f"Thinking set to **{arg}**."
+            current = self._session_thinking_levels.get(session_id, _DEFAULT_THINKING_LEVEL)
+            return f"Current: **{current}**\nAvailable: {', '.join(_THINKING_LEVELS)}"
+
+        if name == "compact":
+            return "Compaction is handled automatically by the SDK when context exceeds the threshold. Use `/reset` to start fresh."
+
+        return None
 
     async def prompt(
         self,
@@ -1069,20 +1143,11 @@ class EchoAgent(Agent):
             return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
 
         first_text = next((p for p in parts if isinstance(p, str)), "")
-        if first_text.strip() in ("/reset", "reset"):
-            log.debug("reset command for session %s", session_id)
-            await self._rebuild_agent(session_id)
-            self._session_titles.pop(session_id, None)
+        cmd_result = await self._handle_command(first_text.strip(), session_id)
+        if cmd_result is not None:
             await self._conn.session_update(
                 session_id=session_id,
-                update=update_agent_message(text_block("Conversation reset.")))
-            return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
-
-        if first_text.strip() in ("/help", "help"):
-            help_text = "Available commands:\n- /reset — Clear conversation history\n- /help — Show this message"
-            await self._conn.session_update(
-                session_id=session_id,
-                update=update_agent_message(text_block(help_text)))
+                update=update_agent_message(text_block(cmd_result)))
             return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
 
         if self._session_modes.get(session_id) == "plan":
@@ -1170,6 +1235,13 @@ class EchoAgent(Agent):
                         thought_tokens=meta.thoughts_token_count,
                         cached_read_tokens=meta.cached_content_token_count,
                     )
+                    self._last_usage[session_id] = {
+                        "input_tokens": meta.prompt_token_count or 0,
+                        "output_tokens": meta.candidates_token_count or 0,
+                        "thought_tokens": meta.thoughts_token_count,
+                        "cached_tokens": meta.cached_content_token_count,
+                        "total_tokens": meta.total_token_count or 0,
+                    }
                     used = meta.total_token_count or 0
                     model_id = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
                     rates = _get_token_rates(model_id, meta.prompt_token_count or 0)

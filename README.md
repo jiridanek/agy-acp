@@ -88,7 +88,7 @@ IDE (IntelliJ) <--ACP JSON-RPC--> EchoAgent <---> Antigravity SDK <---> Gemini A
 - **Sessions**: Create, list, load, fork, resume with conversation persistence
 - **MCP servers**: HTTP, SSE, and stdio transports (with env variable workaround)
 - **Cost tracking**: Per-turn and cumulative USD estimates with long-context surcharge
-- **Slash commands**: `/reset` (clear history), `/help` (list commands)
+- **Slash commands**: `/reset`, `/clear`, `/cost`, `/usage`, `/model [id]`, `/thinking [level]`, `/compact`, `/help`
 - **Authentication**: `GEMINI_API_KEY` env var via ACP auth flow
 
 ## Files
