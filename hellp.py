@@ -34,7 +34,8 @@ from acp.schema import (
     SseMcpServer,
     TextContentBlock,
     TextResourceContents,
-    AgentCapabilities, CloseSessionResponse, SessionModeState, SessionMode, SessionConfigOptionSelect,
+    AgentCapabilities, CloseSessionResponse, PromptCapabilities,
+    SessionModeState, SessionMode, SessionConfigOptionSelect,
     SessionConfigSelectGroup, SessionConfigSelectOption,
 )
 
@@ -73,7 +74,11 @@ class EchoAgent(Agent):
 
         return InitializeResponse(
             protocol_version=protocol_version,
-            # agent_capabilities=AgentCapabilities(nes=False),
+            agent_capabilities=AgentCapabilities(
+                prompt_capabilities=PromptCapabilities(
+                    image=True, audio=True, embedded_context=True,
+                ),
+            ),
         )
 
     async def new_session(
