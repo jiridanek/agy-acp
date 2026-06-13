@@ -844,6 +844,9 @@ class EchoAgent(Agent):
         )
 
 async def main() -> None:
+    # use_unstable_protocol enables session/set_model and session/close RPCs
+    # which are registered as unstable in the ACP SDK router.
+    # The stable path for model switching is session/set_config_option with id="model".
     await run_agent(
         EchoAgent(agent_config_t=agy.LocalAgentConfig, agent_t=agy.Agent),
         use_unstable_protocol=True,
