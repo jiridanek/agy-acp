@@ -104,28 +104,33 @@ class EchoAgent(Agent):
         message_id: str | None = None,
         **kwargs: Any,
     ) -> PromptResponse:
+        print(f"prompt called, blocks={len(prompt)}, session_id={session_id}", file=f, flush=True)
         content_blocks = []
 
-        outgoing_message_ig = uuid4().hex
-
         for block in prompt:
-            prompt = block.get("text", "") if isinstance(block, dict) else getattr(block, "text", "")
-            # if prompt:
-            response = await self._agent.chat(prompt)
-            # else:
-            #     continue
+            block_text = block.get("text", "") if isinstance(block, dict) else getattr(block, "text", "")
+            if not block_text:
+                print(f"skipping empty block: {type(block)}", file=f, flush=True)
+                continue
 
-            async for t in response.thoughts:
-                await self._conn.session_update(session_id=session_id, update=update_agent_thought_text(t),
-                                                source="echo_agent")
+            print(f"calling agent.chat with {len(block_text)} chars", file=f, flush=True)
+            try:
+                response = await self._agent.chat(block_text)
 
-            text = await response.text()
-            # else:
-            #     text = ""
+                print("streaming thoughts...", file=f, flush=True)
+                async for t in response.thoughts:
+                    await self._conn.session_update(
+                        session_id=session_id, update=update_agent_thought_text(t),
+                                                    source="echo_agent")
 
+                print("extracting text...", file=f, flush=True)
+                text = await response.text()
+            except Exception as e:
+                print(f"error during agent chat: {e}", file=f, flush=True)
+                text = f"Error: {e}"
+
+            print(f"sending message chunk ({len(text)} chars)", file=f, flush=True)
             chunk = update_agent_message(text_block(text))
-            chunk.field_meta = {"echo": True}
-            chunk.content.field_meta = {"echo": True}
             chunk.message_id = message_id
 
             await self._conn.session_update(
@@ -133,10 +138,10 @@ class EchoAgent(Agent):
                 update=chunk,
                 source="echo_agent")
             content_blocks.append(text_block(text))
+
+        print("returning PromptResponse", file=f, flush=True)
         return PromptResponse(
-            # content=content_blocks,
             user_message_id=message_id,
-            # agent_message_id=uuid4().hex,
             stop_reason="end_turn"
         )
 
