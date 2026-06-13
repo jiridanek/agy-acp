@@ -47,10 +47,17 @@ class EchoAgent(Agent):
     def __init__(self, agent_t, agent_config_t):
         self._agent_t = agent_t
         self._agent_config_t = agent_config_t
+        self._active_tasks: dict[str, asyncio.Task] = {}
 
     def on_connect(self, conn: Client) -> None:
         log.debug("on_connect")
         self._conn = conn
+
+    async def cancel(self, session_id: str, **kwargs: Any) -> None:
+        log.debug("cancel received for session %s", session_id)
+        task = self._active_tasks.get(session_id)
+        if task and not task.done():
+            task.cancel()
 
     async def close_session(self, session_id: str, **kwargs: Any) -> CloseSessionResponse:
         await self._agent.__aexit__(None, None, None)
@@ -158,8 +165,9 @@ class EchoAgent(Agent):
             return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
 
         log.debug("calling agent.chat with %d parts", len(parts))
+        self._active_tasks[session_id] = asyncio.current_task()
         tracker = ToolCallTracker()
-        text_acc: list[str] = []
+        stop_reason = "end_turn"
         try:
             response = await self._agent.chat(parts)
             async for chunk in response.chunks:
@@ -169,7 +177,6 @@ class EchoAgent(Agent):
                             session_id=session_id,
                             update=update_agent_thought_text(t))
                     case agy.types.Text(text=t):
-                        text_acc.append(t)
                         await self._conn.session_update(
                             session_id=session_id,
                             update=update_agent_message(text_block(t)))
@@ -192,16 +199,23 @@ class EchoAgent(Agent):
                             log.debug("tool result for unknown call %s", tc_id)
                     case _:
                         log.debug("unhandled chunk type: %s", type(chunk))
+        except asyncio.CancelledError:
+            log.debug("prompt cancelled for session %s", session_id)
+            if hasattr(response, "cancel"):
+                await response.cancel()
+            stop_reason = "cancelled"
         except Exception as e:
             log.exception("error during agent chat")
             await self._conn.session_update(
                 session_id=session_id,
                 update=update_agent_message(text_block(f"Error: {e}")))
+        finally:
+            self._active_tasks.pop(session_id, None)
 
-        log.debug("returning PromptResponse")
+        log.debug("returning PromptResponse stop_reason=%s", stop_reason)
         return PromptResponse(
             user_message_id=message_id,
-            stop_reason="end_turn"
+            stop_reason=stop_reason,
         )
 
 async def main() -> None:
