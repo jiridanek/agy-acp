@@ -621,6 +621,111 @@ async def test_offline_cancel():
     assert reply.stop_reason == "cancelled"
 
 
+async def test_offline_auth_methods_declared():
+    """InitializeResponse advertises GEMINI_API_KEY as env var auth method."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    resp = await sut.initialize(protocol_version=1)
+
+    assert resp.auth_methods is not None
+    assert len(resp.auth_methods) == 1
+    method = resp.auth_methods[0]
+    assert method.type == "env_var"
+    assert method.id == "gemini_api_key"
+    assert len(method.vars) == 1
+    assert method.vars[0].name == "GEMINI_API_KEY"
+
+
+async def test_offline_authenticate():
+    """authenticate() returns AuthenticateResponse without error."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+    resp = await sut.authenticate(method_id="gemini_api_key")
+    assert resp is not None
+
+
+async def test_offline_model_switching():
+    """set_session_model changes the model for a session."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    # new_session returns model state
+    assert session.models is not None
+    assert session.models.current_model_id == "gemini-2.5-pro"
+    assert len(session.models.available_models) == 3
+
+    # Switch model
+    resp = await sut.set_session_model(model_id="gemini-2.5-flash", session_id=sid)
+    assert resp is not None
+    assert sut._session_models[sid] == "gemini-2.5-flash"
+
+
+async def test_offline_model_persisted_in_session(tmp_path):
+    """Model choice is persisted and restored on load_session."""
+    import hellp
+
+    store = hellp.SessionStore(path=tmp_path / "sessions.json")
+    chunks = [agy_types.Text(step_index=0, text="ok")]
+    fake_agent = FakeAgent(config=None, responses=[chunks])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd="/tmp")
+    sid = session.session_id
+    await sut.set_session_model(model_id="gemini-2.0-flash", session_id=sid)
+
+    # Trigger save via prompt
+    await sut.prompt([TextContentBlock(type="text", text="hi")], session_id=sid)
+
+    stored = store.load(sid)
+    assert stored["model"] == "gemini-2.0-flash"
+
+    # Load into fresh agent
+    sut2 = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store)
+    await sut2.initialize(protocol_version=1)
+    sut2.on_connect(conn=MagicMock(spec=Client))
+
+    loaded = await sut2.load_session(cwd="/tmp", session_id=sid)
+    assert loaded.models is not None
+    assert loaded.models.current_model_id == "gemini-2.0-flash"
+
+
+async def test_offline_close_session_cleans_model():
+    """close_session removes model state."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+    assert sid in sut._session_models
+
+    await sut.close_session(session_id=sid)
+    assert sid not in sut._session_models
+
+
 # --- Live tests (require GEMINI_API_KEY) ---
 
 async def test_initializes():

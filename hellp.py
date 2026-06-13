@@ -51,12 +51,16 @@ from acp.schema import (
     SseMcpServer,
     TextContentBlock,
     TextResourceContents,
-    AgentCapabilities, AvailableCommand, CloseSessionResponse,
-    CurrentModeUpdate, ListSessionsResponse, LoadSessionResponse,
-    PromptCapabilities, SessionInfo, SessionInfoUpdate,
+    AgentCapabilities, AuthEnvVar, AuthenticateResponse,
+    AvailableCommand, CloseSessionResponse,
+    CurrentModeUpdate, EnvVarAuthMethod,
+    ListSessionsResponse, LoadSessionResponse,
+    ModelInfo, PromptCapabilities, SessionInfo, SessionInfoUpdate,
     SessionConfigOptionSelect, SessionConfigSelectOption,
     SessionListCapabilities, SessionMode, SessionModeState,
-    SetSessionConfigOptionResponse, SetSessionModeResponse, Usage,
+    SessionModelState,
+    SetSessionConfigOptionResponse, SetSessionModeResponse,
+    SetSessionModelResponse, Usage,
     SessionCapabilities, SessionCloseCapabilities,
     RequestPermissionRequest, RequestPermissionResponse,
     UsageUpdate, ToolCallUpdate, ToolCallLocation,
@@ -65,6 +69,13 @@ from acp.schema import (
 current_session_id = ContextVar("current_session_id")
 
 _DEFAULT_STORE_PATH = Path.home() / ".agy-acp" / "sessions.json"
+
+_AVAILABLE_MODELS = [
+    ModelInfo(model_id="gemini-2.5-pro", name="Gemini 2.5 Pro", description="Most capable model"),
+    ModelInfo(model_id="gemini-2.5-flash", name="Gemini 2.5 Flash", description="Fast and efficient"),
+    ModelInfo(model_id="gemini-2.0-flash", name="Gemini 2.0 Flash", description="Previous generation flash"),
+]
+_DEFAULT_MODEL_ID = "gemini-2.5-pro"
 
 
 class SessionStore:
@@ -297,6 +308,7 @@ class EchoAgent(Agent):
         self._session_titles: dict[str, str] = {}
         self._session_modes: dict[str, str] = {}
         self._active_session_id: str | None = None
+        self._session_models: dict[str, str] = {}
         self._last_file_edits: dict[tuple[str, str], dict[str, str | None]] = {}
         self._last_terminal_ids: dict[str, str] = {}
 
@@ -314,6 +326,7 @@ class EchoAgent(Agent):
         await self._agent.__aexit__(None, None, None)
         self._session_titles.pop(session_id, None)
         self._session_modes.pop(session_id, None)
+        self._session_models.pop(session_id, None)
         self._last_terminal_ids.pop(session_id, None)
         for key in [k for k in self._last_file_edits if k[0] == session_id]:
             del self._last_file_edits[key]
@@ -363,6 +376,28 @@ class EchoAgent(Agent):
             )
         return SetSessionConfigOptionResponse(config_options=self._build_config_options(session_id))
 
+    async def authenticate(self, method_id: str, **kwargs: Any) -> AuthenticateResponse | None:
+        log.debug("authenticate method_id=%s", method_id)
+        if method_id == "gemini_api_key":
+            key = os.environ.get("GEMINI_API_KEY")
+            if not key:
+                log.warning("GEMINI_API_KEY not set in environment")
+        return AuthenticateResponse()
+
+    def _build_model_state(self, session_id: str) -> SessionModelState:
+        current = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
+        return SessionModelState(
+            current_model_id=current,
+            available_models=_AVAILABLE_MODELS,
+        )
+
+    async def set_session_model(
+        self, model_id: str, session_id: str, **kwargs: Any,
+    ) -> SetSessionModelResponse | None:
+        log.debug("set_session_model model=%s session=%s", model_id, session_id)
+        self._session_models[session_id] = model_id
+        return SetSessionModelResponse()
+
     async def list_sessions(
         self,
         additional_directories: list[str] | None = None,
@@ -397,7 +432,9 @@ class EchoAgent(Agent):
 
         self._cwd = cwd
         mode = stored.get("mode", "agent")
+        model = stored.get("model", _DEFAULT_MODEL_ID)
         self._session_modes[session_id] = mode
+        self._session_models[session_id] = model
         if stored.get("title"):
             self._session_titles[session_id] = stored.get("title", "")
 
@@ -415,6 +452,7 @@ class EchoAgent(Agent):
                     SessionMode(id="plan", name="Plan", description="Produce a plan without executing tools"),
                 ],
             ),
+            models=self._build_model_state(session_id),
             config_options=self._build_config_options(session_id),
         )
 
@@ -522,6 +560,17 @@ class EchoAgent(Agent):
                 ),
                 load_session=True,
             ),
+            auth_methods=[
+                EnvVarAuthMethod(
+                    type="env_var",
+                    id="gemini_api_key",
+                    name="Gemini API Key",
+                    description="Google Gemini API key for the Antigravity SDK",
+                    vars=[
+                        AuthEnvVar(name="GEMINI_API_KEY", label="API Key"),
+                    ],
+                ),
+            ],
         )
 
     async def new_session(
@@ -539,11 +588,11 @@ class EchoAgent(Agent):
             self._agent._config.workspaces = [cwd]
 
         self._session_modes[session_id] = "agent"
+        self._session_models[session_id] = _DEFAULT_MODEL_ID
         asyncio.ensure_future(self._send_available_commands(session_id))
 
         return NewSessionResponse(
             session_id=session_id,
-            # Provide both modes (legacy) and configOptions (preferred) per ACP spec
             modes=SessionModeState(
                 current_mode_id="agent",
                 available_modes=[
@@ -551,6 +600,7 @@ class EchoAgent(Agent):
                     SessionMode(id="plan", name="Plan", description="Produce a plan without executing tools"),
                 ],
             ),
+            models=self._build_model_state(session_id),
             config_options=self._build_config_options(session_id),
         )
 
@@ -705,6 +755,7 @@ class EchoAgent(Agent):
             "conversation_id": getattr(self._agent, "conversation_id", None),
             "cwd": getattr(self, "_cwd", "."),
             "mode": self._session_modes.get(session_id, "agent"),
+            "model": self._session_models.get(session_id, _DEFAULT_MODEL_ID),
             "title": self._session_titles.get(session_id),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
