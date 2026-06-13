@@ -289,13 +289,14 @@ def _discover_skills(cwd: str) -> list[AvailableCommand]:
 
 
 def _skills_paths(cwd: str) -> list[str]:
-    """Return skill directory paths to pass to the SDK."""
+    """Return absolute skill directory paths to pass to the SDK."""
+    base = Path(cwd).resolve()
     return [
-        str(Path(cwd) / ".gemini" / "commands"),
-        str(Path(cwd) / ".gemini" / "skills"),
+        str(base / ".gemini" / "commands"),
+        str(base / ".gemini" / "skills"),
         str(Path.home() / ".gemini" / "commands"),
         str(Path.home() / ".gemini" / "skills"),
-        str(Path(cwd) / ".agents" / "skills"),
+        str(base / ".agents" / "skills"),
         str(Path.home() / ".agents" / "skills"),
     ]
 
@@ -809,10 +810,10 @@ class EchoAgent(Agent):
         from google.antigravity import types as agy_types
 
         try:
-            disabled_tools, custom_tools = self._build_tools_config()
+            enabled_tools, custom_tools = self._build_tools_config()
             config = self._agent_config_t(
                 capabilities=agy_types.CapabilitiesConfig(
-                    disabled_tools=disabled_tools
+                    enabled_tools=enabled_tools
                 ),
                 policies=[agy_policy.allow_all()],
                 tools=custom_tools,
@@ -1072,23 +1073,44 @@ class EchoAgent(Agent):
         return can_read, can_write, can_terminal
 
     def _build_tools_config(self) -> tuple[list, list]:
-        """Build disabled_tools and custom tools lists based on client capabilities."""
+        """Build enabled_tools (builtin allowlist) and custom tools based on client capabilities.
+
+        Uses enabled_tools (explicit allowlist) instead of disabled_tools:
+        - SDK builtins we keep: list_directory, find_file, search_directory, ask_question, finish
+        - SDK builtins we replace with IDE-routing closures when client supports the capability
+        - SDK builtins we leave enabled when client doesn't support the capability (fallback)
+        """
         from google.antigravity import types as agy_types
 
         can_read, can_write, can_terminal = self._check_client_caps()
-        disabled = []
-        tools = []
+        enabled = [
+            agy_types.BuiltinTools.LIST_DIR,
+            agy_types.BuiltinTools.FIND_FILE,
+            agy_types.BuiltinTools.SEARCH_DIR,
+            agy_types.BuiltinTools.ASK_QUESTION,
+            agy_types.BuiltinTools.FINISH,
+            agy_types.BuiltinTools.START_SUBAGENT,
+            agy_types.BuiltinTools.GENERATE_IMAGE,
+        ]
+        custom_tools = []
+
         if can_read:
-            disabled.append(agy_types.BuiltinTools.VIEW_FILE)
-            tools.append(self.view_file)
+            custom_tools.append(self.view_file)
+        else:
+            enabled.append(agy_types.BuiltinTools.VIEW_FILE)
+
         if can_write:
-            disabled.append(agy_types.BuiltinTools.CREATE_FILE)
-            disabled.append(agy_types.BuiltinTools.EDIT_FILE)
-            tools.extend([self.create_file, self.edit_file])
+            custom_tools.extend([self.create_file, self.edit_file])
+        else:
+            enabled.append(agy_types.BuiltinTools.CREATE_FILE)
+            enabled.append(agy_types.BuiltinTools.EDIT_FILE)
+
         if can_terminal:
-            disabled.append(agy_types.BuiltinTools.RUN_COMMAND)
-            tools.append(self.run_command)
-        return disabled, tools
+            custom_tools.append(self.run_command)
+        else:
+            enabled.append(agy_types.BuiltinTools.RUN_COMMAND)
+
+        return enabled, custom_tools
 
     async def initialize(
         self,
@@ -1188,10 +1210,10 @@ class EchoAgent(Agent):
         self.edit_file = edit_file
         self.run_command = run_command
 
-        disabled_tools, custom_tools = self._build_tools_config()
+        enabled_tools, custom_tools = self._build_tools_config()
         cwd = getattr(self, "_cwd", ".")
         config = self._agent_config_t(
-            capabilities=agy_types.CapabilitiesConfig(disabled_tools=disabled_tools),
+            capabilities=agy_types.CapabilitiesConfig(enabled_tools=enabled_tools),
             policies=[agy_policy.allow_all()],
             tools=custom_tools,
             skills_paths=_skills_paths(cwd),

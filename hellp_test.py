@@ -604,14 +604,18 @@ async def test_offline_custom_tools_disabled_and_registered():
 
     assert len(configs_passed) == 1
     config = configs_passed[0]
-    # Check disabled built-ins
-    assert set(config.capabilities.disabled_tools) == {
-        BuiltinTools.VIEW_FILE,
-        BuiltinTools.CREATE_FILE,
-        BuiltinTools.EDIT_FILE,
-        BuiltinTools.RUN_COMMAND,
-    }
-    # Check custom tools registered in connection config
+    # With full client caps (fs + terminal), all 4 are replaced by custom tools
+    # enabled_tools should NOT include VIEW_FILE, CREATE_FILE, EDIT_FILE, RUN_COMMAND
+    enabled = set(config.capabilities.enabled_tools)
+    assert BuiltinTools.VIEW_FILE not in enabled
+    assert BuiltinTools.CREATE_FILE not in enabled
+    assert BuiltinTools.EDIT_FILE not in enabled
+    assert BuiltinTools.RUN_COMMAND not in enabled
+    # But read-only builtins should be enabled
+    assert BuiltinTools.LIST_DIR in enabled
+    assert BuiltinTools.FIND_FILE in enabled
+    assert BuiltinTools.SEARCH_DIR in enabled
+    # Check custom tools registered
     registered_tools = [t.__name__ for t in config.tools]
     assert "view_file" in registered_tools
     assert "create_file" in registered_tools
@@ -646,12 +650,13 @@ async def test_offline_no_terminal_leaves_builtin_run_command():
     await sut.initialize(protocol_version=1, client_capabilities=no_terminal_caps)
 
     config = configs_passed[0]
-    disabled = set(config.capabilities.disabled_tools)
-    # File tools are disabled (IDE supports fs), but RUN_COMMAND is NOT disabled
-    assert BuiltinTools.VIEW_FILE in disabled
-    assert BuiltinTools.CREATE_FILE in disabled
-    assert BuiltinTools.EDIT_FILE in disabled
-    assert BuiltinTools.RUN_COMMAND not in disabled
+    enabled = set(config.capabilities.enabled_tools)
+    # IDE supports fs → file builtins NOT in enabled (replaced by custom tools)
+    # IDE doesn't support terminal → RUN_COMMAND IS in enabled (SDK built-in handles it)
+    assert BuiltinTools.VIEW_FILE not in enabled
+    assert BuiltinTools.CREATE_FILE not in enabled
+    assert BuiltinTools.EDIT_FILE not in enabled
+    assert BuiltinTools.RUN_COMMAND in enabled
     # Custom tools include file tools but NOT run_command
     registered = [t.__name__ for t in config.tools]
     assert "view_file" in registered
@@ -2064,33 +2069,38 @@ async def test_offline_resume_session_not_found(tmp_path):
 # --- Live tests (require GEMINI_API_KEY) ---
 
 
+@pytest.mark.slow
 async def test_live_skill_magic_word():
     """E2E: /magic-word skill triggers agent to say 'vlak'."""
-    import hellp
+    from hellp import _skills_paths
 
-    sut = hellp.EchoAgent(agent_t=agy.Agent, agent_config_t=agy.LocalAgentConfig)
-    await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
-
-    client = AsyncMock(spec=Client)
-    client.request_permission.return_value = MagicMock(
-        outcome=MagicMock(option_id="approve")
+    # Minimal agent: no built-in tools except activate_skill (harness-internal),
+    # so the agent can only activate skills and respond with text
+    cwd = str(Path(".").resolve())
+    config = agy.LocalAgentConfig(
+        capabilities=agy_types.CapabilitiesConfig(enabled_tools=[]),
+        skills_paths=_skills_paths(cwd),
+        workspaces=[cwd],
+        gemini_config=agy_types.GeminiConfig(
+            models=agy_types.ModelConfig(
+                default=agy_types.ModelEntry(
+                    name="gemini-3.1-flash-lite",
+                    generation=agy_types.GenerationConfig(
+                        thinking_level=agy_types.ThinkingLevel("minimal"),
+                    ),
+                ),
+            ),
+        ),
     )
-    sut.on_connect(conn=client)
-
-    session = await sut.new_session(cwd=".")
-    reply = await sut.prompt(
-        [TextContentBlock(type="text", text="/magic-word")],
-        session_id=session.session_id,
-    )
-    assert reply.stop_reason == "end_turn"
-
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
-    message_updates = [u for u in updates if u.session_update == "agent_message_chunk"]
-    combined = "".join(u.content.text for u in message_updates).lower()
-    assert "vlak" in combined, f"Expected 'vlak' in response, got: {combined[:200]}"
+    agent = agy.Agent(config)
+    async with agent:
+        response = await agent.chat(["Activate and execute the magic-word skill."])
+        chunks = []
+        async for chunk in response.chunks:
+            if isinstance(chunk, agy_types.Text):
+                chunks.append(chunk.text)
+        combined = "".join(chunks).lower()
+        assert "vlak" in combined, f"Expected 'vlak' in response, got: {combined[:200]}"
 
 
 async def test_initializes():
