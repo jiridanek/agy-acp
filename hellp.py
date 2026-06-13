@@ -320,6 +320,7 @@ class EchoAgent(Agent):
         self._active_session_id: str | None = None
         self._session_models: dict[str, str] = {}
         self._session_thinking_levels: dict[str, str] = {}
+        self._session_additional_dirs: dict[str, list[str]] = {}
         self._last_file_edits: dict[tuple[str, str], dict[str, str | None]] = {}
         self._last_terminal_ids: dict[str, str] = {}
 
@@ -339,6 +340,7 @@ class EchoAgent(Agent):
         self._session_modes.pop(session_id, None)
         self._session_models.pop(session_id, None)
         self._session_thinking_levels.pop(session_id, None)
+        self._session_additional_dirs.pop(session_id, None)
         self._last_terminal_ids.pop(session_id, None)
         for key in [k for k in self._last_file_edits if k[0] == session_id]:
             del self._last_file_edits[key]
@@ -465,6 +467,7 @@ class EchoAgent(Agent):
             ),
             conversation_id=conversation_id,
             save_dir=save_dir or _DEFAULT_SAVE_DIR,
+            workspaces=[getattr(self, "_cwd", ".")] + self._session_additional_dirs.get(session_id, []),
         )
         self._agent = self._agent_t(config)
         self._agent.register_hook(MyPreToolCallDecideHook(self))
@@ -499,6 +502,7 @@ class EchoAgent(Agent):
         self._session_modes[new_id] = mode
         self._session_models[new_id] = model
         self._session_thinking_levels[new_id] = thinking
+        self._session_additional_dirs[new_id] = additional_directories or self._session_additional_dirs.get(session_id, [])
         if title:
             self._session_titles[new_id] = f"{title} (fork)"
 
@@ -550,6 +554,7 @@ class EchoAgent(Agent):
         self._session_modes[session_id] = mode
         self._session_models[session_id] = model
         self._session_thinking_levels[session_id] = thinking
+        self._session_additional_dirs[session_id] = additional_directories or []
         if stored.get("title"):
             self._session_titles[session_id] = stored["title"]
 
@@ -610,6 +615,7 @@ class EchoAgent(Agent):
         self._session_modes[session_id] = mode
         self._session_models[session_id] = model
         self._session_thinking_levels[session_id] = thinking
+        self._session_additional_dirs[session_id] = additional_directories or []
         if stored.get("title"):
             self._session_titles[session_id] = stored.get("title", "")
 
@@ -762,13 +768,15 @@ class EchoAgent(Agent):
         self._cwd = cwd
         session_id = uuid4().hex
 
-        # Wire cwd to workspaces on LocalAgentConfig if supported by the agent config
+        # Wire cwd + additional_directories to workspaces
+        workspaces = [cwd] + (additional_directories or [])
         if hasattr(self._agent, "_config") and hasattr(self._agent._config, "workspaces"):
-            self._agent._config.workspaces = [cwd]
+            self._agent._config.workspaces = workspaces
 
         self._session_modes[session_id] = "agent"
         self._session_models[session_id] = _DEFAULT_MODEL_ID
         self._session_thinking_levels[session_id] = _DEFAULT_THINKING_LEVEL
+        self._session_additional_dirs[session_id] = additional_directories or []
         asyncio.ensure_future(self._send_available_commands(session_id))
 
         return NewSessionResponse(

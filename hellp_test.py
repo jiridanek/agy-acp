@@ -973,6 +973,43 @@ async def test_offline_load_session_rebuilds_with_conversation_id(tmp_path):
     assert configs_seen[-1].get("conversation_id") == "conv-xyz"
 
 
+async def test_offline_additional_directories():
+    """additional_directories are passed as workspaces to the agent config."""
+    import hellp
+
+    configs_seen = []
+    def tracking_config_t(**kwargs):
+        configs_seen.append(kwargs)
+        return FakeConfig(**kwargs)
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+    sut._agent_config_t = tracking_config_t
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(
+        cwd="/project",
+        additional_directories=["/lib", "/shared"],
+    )
+    sid = session.session_id
+
+    assert sut._session_additional_dirs[sid] == ["/lib", "/shared"]
+
+    # Trigger _rebuild_agent via model change
+    await sut.set_session_model(model_id="gemini-2.5-flash", session_id=sid)
+
+    assert len(configs_seen) >= 1
+    workspaces = configs_seen[-1].get("workspaces")
+    assert workspaces == ["/project", "/lib", "/shared"]
+
+    # Cleanup
+    await sut.close_session(session_id=sid)
+    assert sid not in sut._session_additional_dirs
+
+
 async def test_offline_agent_info_declared():
     """InitializeResponse includes agent name, version, and title."""
     import hellp
