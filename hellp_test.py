@@ -157,11 +157,31 @@ async def test_offline_tool_execution_populates_edit_state():
     sid = session.session_id
     sut._active_session_id = sid
 
-    result = await sut.edit_file("test.py", "new content")
+    result = await sut.edit_file("test.py", "old", "new")
     assert "Successfully edited" in result
     assert (sid, "test.py") in sut._last_file_edits
     assert sut._last_file_edits[(sid, "test.py")]["old_text"] == "old content"
     assert sut._last_file_edits[(sid, "test.py")]["new_text"] == "new content"
+
+
+async def test_offline_edit_file_not_found():
+    """edit_file returns error when old_string is not in the file."""
+    import hellp
+    from acp.schema import ReadTextFileResponse
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = AsyncMock(spec=Client)
+    client.read_text_file.return_value = ReadTextFileResponse(content="hello world")
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sut._active_session_id = session.session_id
+
+    result = await sut.edit_file("test.py", "nonexistent", "replacement")
+    assert "old_string not found" in result
 
 
 async def test_offline_tool_works_without_contextvar():

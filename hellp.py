@@ -493,18 +493,17 @@ class EchoAgent(Agent):
             except Exception as e:
                 return f"Error: Failed to create file '{path}': {e}"
 
-        async def edit_file(path: str, content: str) -> str:
-            """Overwrites an existing file with new content via the IDE."""
+        async def edit_file(path: str, old_string: str, new_string: str) -> str:
+            """Replaces the first occurrence of old_string with new_string in a file."""
             try:
                 sid = agent_ref._active_session_id
-                old_text = None
-                try:
-                    old_resp = await agent_ref._conn.read_text_file(path=path, session_id=sid)
-                    old_text = old_resp.content
-                except Exception:
-                    pass
-                agent_ref._last_file_edits[(sid, path)] = {"old_text": old_text, "new_text": content}
-                await agent_ref._conn.write_text_file(content=content, path=path, session_id=sid)
+                resp = await agent_ref._conn.read_text_file(path=path, session_id=sid)
+                old_text = resp.content
+                if old_string not in old_text:
+                    return f"Error: old_string not found in '{path}'"
+                new_text = old_text.replace(old_string, new_string, 1)
+                agent_ref._last_file_edits[(sid, path)] = {"old_text": old_text, "new_text": new_text}
+                await agent_ref._conn.write_text_file(content=new_text, path=path, session_id=sid)
                 return f"Successfully edited file: {path}"
             except Exception as e:
                 return f"Error: Failed to edit file '{path}': {e}"
