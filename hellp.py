@@ -1,7 +1,7 @@
 import asyncio
 import base64
-import contextvars
 import logging
+import re
 from contextvars import ContextVar
 from typing import Any
 from uuid import uuid4
@@ -48,7 +48,7 @@ from acp.schema import (
     TextResourceContents,
     AgentCapabilities, AvailableCommand, CloseSessionResponse,
     PromptCapabilities, SessionInfoUpdate, Usage,
-    SessionModeState, SessionMode, SessionConfigOptionSelect,
+    SessionConfigOptionSelect,
     SessionConfigSelectGroup, SessionConfigSelectOption,
     SessionCapabilities, SessionCloseCapabilities,
     RequestPermissionRequest, RequestPermissionResponse,
@@ -56,6 +56,38 @@ from acp.schema import (
 )
 
 current_session_id = ContextVar("current_session_id")
+
+_PLAN_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"[-*]\s+\[([xX /\-])\]\s+(.*)"   # - [x] item  or  * [ ] item
+    r"|[-*]\s+(.*)"                      # - item  or  * item
+    r"|(\d+)\.\s+(.*)"                   # 1. item  or  23. item
+    r")$"
+)
+
+
+def _parse_plan_entries(lines: list[str]) -> list:
+    entries = []
+    for line in lines:
+        m = _PLAN_LINE_RE.match(line)
+        if not m:
+            continue
+        if m.group(1) is not None:
+            marker, content = m.group(1), m.group(2)
+            if marker in ("x", "X"):
+                status = "completed"
+            elif marker in ("-", "/"):
+                status = "in_progress"
+            else:
+                status = "pending"
+        elif m.group(3) is not None:
+            content, status = m.group(3), "pending"
+        else:
+            content, status = m.group(5), "pending"
+        content = content.strip()
+        if content:
+            entries.append(plan_entry(content=content, status=status))
+    return entries
 
 
 class MyPreToolCallDecideHook(PreToolCallDecideHook):
@@ -162,6 +194,10 @@ class EchoAgent(Agent):
 
     async def close_session(self, session_id: str, **kwargs: Any) -> CloseSessionResponse:
         await self._agent.__aexit__(None, None, None)
+        self._session_titled.discard(session_id)
+        self._last_terminal_ids.pop(session_id, None)
+        for key in [k for k in self._last_file_edits if k[0] == session_id]:
+            del self._last_file_edits[key]
         return CloseSessionResponse()
 
     async def initialize(
@@ -182,40 +218,52 @@ class EchoAgent(Agent):
 
         async def view_file(path: str) -> str:
             """Reads and returns the contents of a file via the IDE."""
-            sid = current_session_id.get()
-            resp = await agent_ref._conn.read_text_file(path=path, session_id=sid)
-            return resp.content
+            try:
+                sid = current_session_id.get()
+                resp = await agent_ref._conn.read_text_file(path=path, session_id=sid)
+                return resp.content
+            except Exception as e:
+                return f"Error: Failed to read file '{path}': {e}"
 
         async def create_file(path: str, content: str) -> str:
             """Creates a new file with the specified content via the IDE."""
-            sid = current_session_id.get()
-            agent_ref._last_file_edits[(sid, path)] = {"old_text": None, "new_text": content}
-            await agent_ref._conn.write_text_file(content=content, path=path, session_id=sid)
-            return f"Successfully created file: {path}"
+            try:
+                sid = current_session_id.get()
+                agent_ref._last_file_edits[(sid, path)] = {"old_text": None, "new_text": content}
+                await agent_ref._conn.write_text_file(content=content, path=path, session_id=sid)
+                return f"Successfully created file: {path}"
+            except Exception as e:
+                return f"Error: Failed to create file '{path}': {e}"
 
         async def edit_file(path: str, content: str) -> str:
             """Overwrites an existing file with new content via the IDE."""
-            sid = current_session_id.get()
-            old_text = None
             try:
-                old_resp = await agent_ref._conn.read_text_file(path=path, session_id=sid)
-                old_text = old_resp.content
-            except Exception:
-                pass
-            agent_ref._last_file_edits[(sid, path)] = {"old_text": old_text, "new_text": content}
-            await agent_ref._conn.write_text_file(content=content, path=path, session_id=sid)
-            return f"Successfully edited file: {path}"
+                sid = current_session_id.get()
+                old_text = None
+                try:
+                    old_resp = await agent_ref._conn.read_text_file(path=path, session_id=sid)
+                    old_text = old_resp.content
+                except Exception:
+                    pass
+                agent_ref._last_file_edits[(sid, path)] = {"old_text": old_text, "new_text": content}
+                await agent_ref._conn.write_text_file(content=content, path=path, session_id=sid)
+                return f"Successfully edited file: {path}"
+            except Exception as e:
+                return f"Error: Failed to edit file '{path}': {e}"
 
         async def run_command(command: str) -> str:
             """Runs a shell command in an IDE-managed terminal."""
-            sid = current_session_id.get()
-            term_resp = await agent_ref._conn.create_terminal(command=command, session_id=sid)
-            terminal_id = term_resp.terminal_id
-            agent_ref._last_terminal_ids[sid] = terminal_id
-            await agent_ref._conn.wait_for_terminal_exit(session_id=sid, terminal_id=terminal_id)
-            out_resp = await agent_ref._conn.terminal_output(session_id=sid, terminal_id=terminal_id)
-            await agent_ref._conn.release_terminal(session_id=sid, terminal_id=terminal_id)
-            return out_resp.output
+            try:
+                sid = current_session_id.get()
+                term_resp = await agent_ref._conn.create_terminal(command=command, session_id=sid)
+                terminal_id = term_resp.terminal_id
+                agent_ref._last_terminal_ids[sid] = terminal_id
+                await agent_ref._conn.wait_for_terminal_exit(session_id=sid, terminal_id=terminal_id)
+                out_resp = await agent_ref._conn.terminal_output(session_id=sid, terminal_id=terminal_id)
+                await agent_ref._conn.release_terminal(session_id=sid, terminal_id=terminal_id)
+                return out_resp.output
+            except Exception as e:
+                return f"Error: Failed to run command '{command}': {e}"
 
         self.view_file = view_file
         self.create_file = create_file
@@ -364,10 +412,9 @@ class EchoAgent(Agent):
         stop_reason = "end_turn"
         response = None
         
-        # Track and stream thought/plan updates
-        thought_buffer = [""]
-        last_entries = [None]
-        
+        thought_lines: list[str] = []
+        last_plan_len = 0
+
         # Set session context var so safety hook can request permissions associated with session
         token = current_session_id.set(session_id)
         try:
@@ -378,38 +425,14 @@ class EchoAgent(Agent):
                         await self._conn.session_update(
                             session_id=session_id,
                             update=update_agent_thought_text(t))
-                            
-                        # Process and stream automated plan updates
-                        thought_buffer[0] += t
-                        new_entries = []
-                        for line in thought_buffer[0].split("\n"):
-                            line = line.strip()
-                            if not line:
-                                continue
-                            if line.startswith(("- [ ] ", "* [ ] ", "- ", "* ", "1. ")):
-                                status = "pending"
-                                content = line
-                                if "[ ]" in line:
-                                    status = "pending"
-                                    content = line.split("[ ]", 1)[1].strip()
-                                elif "[x]" in line or "[X]" in line:
-                                    status = "completed"
-                                    content = line.split("]", 1)[1].strip()
-                                elif "[-]" in line or "[/]" in line:
-                                    status = "in_progress"
-                                    content = line.split("]", 1)[1].strip()
-                                else:
-                                    for prefix in ("- ", "* ", "1. "):
-                                        if content.startswith(prefix):
-                                            content = content[len(prefix):].strip()
-                                if content:
-                                    new_entries.append(plan_entry(content=content, status=status))
-                        
-                        if new_entries and new_entries != last_entries[0]:
-                            last_entries[0] = new_entries
+
+                        thought_lines.extend(t.split("\n"))
+                        entries = _parse_plan_entries(thought_lines)
+                        if entries and len(entries) != last_plan_len:
+                            last_plan_len = len(entries)
                             await self._conn.session_update(
                                 session_id=session_id,
-                                update=update_plan(new_entries)
+                                update=update_plan(entries),
                             )
                     case agy.types.Text(text=t):
                         await self._conn.session_update(
@@ -504,14 +527,14 @@ class EchoAgent(Agent):
                         thought_tokens=meta.thoughts_token_count,
                         cached_read_tokens=meta.cached_content_token_count,
                     )
-                    # Notify the client with a real-time UsageUpdate
+                    used = meta.total_token_count or 0
                     await self._conn.session_update(
                         session_id=session_id,
                         update=UsageUpdate(
                             session_update="usage_update",
-                            size=1048576,
-                            used=meta.total_token_count or 0,
-                        )
+                            size=max(used, 1),
+                            used=used,
+                        ),
                     )
         except Exception:
             pass

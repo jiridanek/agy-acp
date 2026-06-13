@@ -122,6 +122,46 @@ async def test_offline_prompt_with_tool_calls():
     assert tool_progress[0].status == "completed"
 
 
+async def test_offline_tool_without_session_context():
+    """Tool functions should return an error string, not crash, when no session context is set."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    result = await sut.view_file("/tmp/test.txt")
+    assert "Error" in result or "error" in result
+
+
+async def test_offline_close_session_cleans_state():
+    """close_session should clear per-session state dicts."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    sut._last_file_edits[(sid, "/tmp/x")] = {"old_text": "a", "new_text": "b"}
+    sut._last_terminal_ids[sid] = "term-1"
+    sut._session_titled.add(sid)
+
+    await sut.close_session(session_id=sid)
+
+    assert (sid, "/tmp/x") not in sut._last_file_edits
+    assert sid not in sut._last_terminal_ids
+    assert sid not in sut._session_titled
+
+
 async def test_offline_empty_prompt_returns_early():
     """Prompt with no convertible content should return without calling chat()."""
     import hellp
@@ -174,6 +214,39 @@ async def test_offline_custom_tools_disabled_and_registered():
     assert "create_file" in registered_tools
     assert "edit_file" in registered_tools
     assert "run_command" in registered_tools
+
+
+async def test_offline_plan_updates_numbered_lists():
+    """Verify numbered lists like '2. item' are parsed as plan entries."""
+    import hellp
+
+    chunks = [
+        agy_types.Thought(step_index=0, text="Steps:\n1. First\n2. Second\n3. Third"),
+        agy_types.Text(step_index=1, text="Done."),
+    ]
+    fake_agent = FakeAgent(config=None, responses=[chunks])
+
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1)
+
+    client = AsyncMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    await sut.prompt(
+        [TextContentBlock(type="text", text="plan it")],
+        session_id=session.session_id,
+    )
+
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    plan_updates = [u for u in updates if u.session_update == "plan"]
+
+    assert len(plan_updates) > 0
+    entries = plan_updates[-1].entries
+    contents = [e.content for e in entries]
+    assert "First" in contents
+    assert "Second" in contents
+    assert "Third" in contents
 
 
 async def test_offline_plan_updates():
@@ -230,7 +303,6 @@ async def test_offline_rich_tool_outputs():
     await sut.initialize(protocol_version=1)
 
     client = AsyncMock(spec=Client)
-    client.read_text_file.return_return = AsyncMock()
     # Mocking file read response containing "old contents"
     from acp.schema import ReadTextFileResponse, CreateTerminalResponse, TerminalOutputResponse, WaitForTerminalExitResponse
     client.read_text_file.return_value = ReadTextFileResponse(content="old contents")
