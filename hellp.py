@@ -1,8 +1,12 @@
 import asyncio
 import base64
+import json
 import logging
+import os
 import re
 from contextvars import ContextVar
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -47,16 +51,54 @@ from acp.schema import (
     TextContentBlock,
     TextResourceContents,
     AgentCapabilities, AvailableCommand, CloseSessionResponse,
-    CurrentModeUpdate, PromptCapabilities, SessionInfoUpdate,
+    CurrentModeUpdate, ListSessionsResponse, LoadSessionResponse,
+    PromptCapabilities, SessionInfo, SessionInfoUpdate,
     SessionConfigOptionSelect, SessionConfigSelectOption,
-    SessionMode, SessionModeState, SetSessionConfigOptionResponse,
-    SetSessionModeResponse, Usage,
+    SessionListCapabilities, SessionMode, SessionModeState,
+    SetSessionConfigOptionResponse, SetSessionModeResponse, Usage,
     SessionCapabilities, SessionCloseCapabilities,
     RequestPermissionRequest, RequestPermissionResponse,
     UsageUpdate, ToolCallUpdate, ToolCallLocation,
 )
 
 current_session_id = ContextVar("current_session_id")
+
+_DEFAULT_STORE_PATH = Path.home() / ".agy-acp" / "sessions.json"
+
+
+class SessionStore:
+    def __init__(self, path: Path = _DEFAULT_STORE_PATH):
+        self._path = path
+
+    def _read(self) -> dict[str, dict]:
+        if not self._path.exists():
+            return {}
+        return json.loads(self._path.read_text())
+
+    def _write(self, data: dict[str, dict]) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.write_text(json.dumps(data, indent=2))
+
+    def save(self, session_id: str, info: dict) -> None:
+        data = self._read()
+        data[session_id] = info
+        self._write(data)
+
+    def list(self, cwd: str | None = None) -> list[dict]:
+        data = self._read()
+        sessions = list(data.values())
+        if cwd:
+            sessions = [s for s in sessions if s.get("cwd") == cwd]
+        sessions.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
+        return sessions
+
+    def load(self, session_id: str) -> dict | None:
+        return self._read().get(session_id)
+
+    def delete(self, session_id: str) -> None:
+        data = self._read()
+        data.pop(session_id, None)
+        self._write(data)
 
 _PLAN_LINE_RE = re.compile(
     r"^\s*(?:"
@@ -175,11 +217,12 @@ class EchoAgent(Agent):
     _conn: Client
     _agent: agy.Agent
 
-    def __init__(self, agent_t, agent_config_t):
+    def __init__(self, agent_t, agent_config_t, store: SessionStore | None = None):
         self._agent_t = agent_t
         self._agent_config_t = agent_config_t
+        self._store = store or SessionStore()
         self._active_tasks: dict[str, asyncio.Task] = {}
-        self._session_titled: set[str] = set()
+        self._session_titles: dict[str, str] = {}
         self._session_modes: dict[str, str] = {}
         self._last_file_edits: dict[tuple[str, str], dict[str, str | None]] = {}
         self._last_terminal_ids: dict[str, str] = {}
@@ -196,11 +239,12 @@ class EchoAgent(Agent):
 
     async def close_session(self, session_id: str, **kwargs: Any) -> CloseSessionResponse:
         await self._agent.__aexit__(None, None, None)
-        self._session_titled.discard(session_id)
+        self._session_titles.pop(session_id, None)
         self._session_modes.pop(session_id, None)
         self._last_terminal_ids.pop(session_id, None)
         for key in [k for k in self._last_file_edits if k[0] == session_id]:
             del self._last_file_edits[key]
+        self._store.delete(session_id)
         return CloseSessionResponse()
 
     async def set_session_mode(self, mode_id: str, session_id: str, **kwargs: Any) -> SetSessionModeResponse:
@@ -245,6 +289,61 @@ class EchoAgent(Agent):
                 ),
             )
         return SetSessionConfigOptionResponse(config_options=self._build_config_options(session_id))
+
+    async def list_sessions(
+        self,
+        additional_directories: list[str] | None = None,
+        cursor: str | None = None,
+        cwd: str | None = None,
+        **kwargs: Any,
+    ) -> ListSessionsResponse:
+        sessions = self._store.list(cwd=cwd)
+        return ListSessionsResponse(
+            sessions=[
+                SessionInfo(
+                    session_id=s["session_id"],
+                    cwd=s["cwd"],
+                    title=s.get("title"),
+                    updated_at=s.get("updated_at"),
+                )
+                for s in sessions
+            ],
+        )
+
+    async def load_session(
+        self,
+        cwd: str,
+        session_id: str,
+        additional_directories: list[str] | None = None,
+        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
+        **kwargs: Any,
+    ) -> LoadSessionResponse | None:
+        stored = self._store.load(session_id)
+        if not stored:
+            return None
+
+        self._cwd = cwd
+        mode = stored.get("mode", "agent")
+        self._session_modes[session_id] = mode
+        if stored.get("title"):
+            self._session_titles[session_id] = stored.get("title", "")
+
+        conv_id = stored.get("conversation_id")
+        if conv_id:
+            log.debug("resuming conversation %s for session %s", conv_id, session_id)
+
+        asyncio.ensure_future(self._send_available_commands(session_id))
+
+        return LoadSessionResponse(
+            modes=SessionModeState(
+                current_mode_id=mode,
+                available_modes=[
+                    SessionMode(id="agent", name="Agent", description="Execute tools autonomously"),
+                    SessionMode(id="plan", name="Plan", description="Produce a plan without executing tools"),
+                ],
+            ),
+            config_options=self._build_config_options(session_id),
+        )
 
     async def initialize(
         self,
@@ -345,7 +444,9 @@ class EchoAgent(Agent):
                 ),
                 session_capabilities=SessionCapabilities(
                     close=SessionCloseCapabilities(),
+                    list=SessionListCapabilities(),
                 ),
+                load_session=True,
             ),
         )
 
@@ -438,11 +539,11 @@ class EchoAgent(Agent):
         if self._session_modes.get(session_id) == "plan":
             parts.append("\n[PLAN MODE: Produce a step-by-step plan. Do not execute any tools.]")
 
-        if session_id not in self._session_titled:
-            self._session_titled.add(session_id)
+        if session_id not in self._session_titles:
             first_text = next((p for p in parts if isinstance(p, str)), None)
             if first_text:
                 title = first_text[:80].split("\n")[0]
+                self._session_titles[session_id] = title
                 await self._conn.session_update(
                     session_id=session_id,
                     update=SessionInfoUpdate(
@@ -583,6 +684,15 @@ class EchoAgent(Agent):
                     )
         except Exception:
             pass
+
+        self._store.save(session_id, {
+            "session_id": session_id,
+            "conversation_id": getattr(self._agent, "conversation_id", None),
+            "cwd": getattr(self, "_cwd", "."),
+            "mode": self._session_modes.get(session_id, "agent"),
+            "title": self._session_titles.get(session_id),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
 
         log.debug("returning PromptResponse stop_reason=%s", stop_reason)
         return PromptResponse(

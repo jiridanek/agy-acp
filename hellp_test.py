@@ -153,13 +153,13 @@ async def test_offline_close_session_cleans_state():
 
     sut._last_file_edits[(sid, "/tmp/x")] = {"old_text": "a", "new_text": "b"}
     sut._last_terminal_ids[sid] = "term-1"
-    sut._session_titled.add(sid)
+    sut._session_titles[sid] = "test"
 
     await sut.close_session(session_id=sid)
 
     assert (sid, "/tmp/x") not in sut._last_file_edits
     assert sid not in sut._last_terminal_ids
-    assert sid not in sut._session_titled
+    assert sid not in sut._session_titles
 
 
 async def test_offline_empty_prompt_returns_early():
@@ -391,6 +391,72 @@ async def test_offline_session_modes():
         session_id=sid,
     )
     assert reply.stop_reason == "end_turn"
+
+
+async def test_offline_session_persistence(tmp_path):
+    """new_session → prompt → list_sessions finds it → close_session → list_sessions doesn't."""
+    import hellp
+
+    store = hellp.SessionStore(path=tmp_path / "sessions.json")
+    chunks = [agy_types.Text(step_index=0, text="hi")]
+    fake_agent = FakeAgent(config=None, responses=[chunks])
+
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd="/tmp/myproject")
+    sid = session.session_id
+
+    await sut.prompt(
+        [TextContentBlock(type="text", text="hello world")],
+        session_id=sid,
+    )
+
+    listing = await sut.list_sessions(cwd="/tmp/myproject")
+    assert len(listing.sessions) == 1
+    assert listing.sessions[0].session_id == sid
+    assert listing.sessions[0].cwd == "/tmp/myproject"
+    assert listing.sessions[0].title == "hello world"
+
+    listing_other = await sut.list_sessions(cwd="/other")
+    assert len(listing_other.sessions) == 0
+
+    await sut.close_session(session_id=sid)
+
+    listing_after = await sut.list_sessions(cwd="/tmp/myproject")
+    assert len(listing_after.sessions) == 0
+
+
+async def test_offline_load_session(tmp_path):
+    """load_session restores mode and config from a previously saved session."""
+    import hellp
+
+    store = hellp.SessionStore(path=tmp_path / "sessions.json")
+    chunks = [agy_types.Text(step_index=0, text="response")]
+    fake_agent = FakeAgent(config=None, responses=[chunks, [agy_types.Text(step_index=0, text="resumed")]])
+
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store)
+    await sut.initialize(protocol_version=1)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd="/tmp/proj")
+    sid = session.session_id
+
+    await sut.set_session_mode(mode_id="plan", session_id=sid)
+    await sut.prompt(
+        [TextContentBlock(type="text", text="plan something")],
+        session_id=sid,
+    )
+
+    loaded = await sut.load_session(session_id=sid, cwd="/tmp/proj")
+    assert loaded is not None
+    assert loaded.modes.current_mode_id == "plan"
+    assert sut._session_modes[sid] == "plan"
 
 
 async def test_offline_usage_tracking():
