@@ -13,8 +13,12 @@ from typing import Any
 from uuid import uuid4
 
 import google.antigravity as agy
-from google.antigravity.hooks.hooks import PostToolCallHook, PreToolCallDecideHook, HookContext
 from google.antigravity.hooks import policy as agy_policy
+from google.antigravity.hooks.hooks import (
+    HookContext,
+    PostToolCallHook,
+    PreToolCallDecideHook,
+)
 from google.antigravity.types import HookResult
 
 log = logging.getLogger(__name__)
@@ -28,49 +32,72 @@ from acp import (
     PromptResponse,
     run_agent,
     text_block,
-    update_agent_message, update_agent_thought_text,
-)
-from acp.helpers import (
-    update_available_commands,
-    tool_content,
-    tool_diff_content,
-    tool_terminal_ref,
-    update_plan,
-    plan_entry,
+    update_agent_message,
+    update_agent_thought_text,
 )
 from acp.contrib.permissions import PermissionBroker
 from acp.contrib.tool_calls import ToolCallTracker
+from acp.helpers import (
+    plan_entry,
+    tool_content,
+    tool_diff_content,
+    tool_terminal_ref,
+    update_available_commands,
+    update_plan,
+)
 from acp.interfaces import Client
 from acp.schema import (
+    AgentAuthCapabilities,
+    AgentCapabilities,
     AudioContentBlock,
+    AuthenticateResponse,
+    AuthEnvVar,
+    AvailableCommand,
     BlobResourceContents,
     ClientCapabilities,
+    CloseSessionResponse,
+    ConfigOptionUpdate,
+    Cost,
+    CurrentModeUpdate,
     EmbeddedResourceContentBlock,
+    EnvVarAuthMethod,
+    ForkSessionResponse,
     HttpMcpServer,
     ImageContentBlock,
     Implementation,
+    ListSessionsResponse,
+    LoadSessionResponse,
+    McpCapabilities,
     McpServerStdio,
+    ModelInfo,
+    PromptCapabilities,
+    RequestPermissionRequest,
+    RequestPermissionResponse,
     ResourceContentBlock,
+    ResumeSessionResponse,
+    SessionAdditionalDirectoriesCapabilities,
+    SessionCapabilities,
+    SessionCloseCapabilities,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
+    SessionForkCapabilities,
+    SessionInfo,
+    SessionInfoUpdate,
+    SessionListCapabilities,
+    SessionMode,
+    SessionModelState,
+    SessionModeState,
+    SessionResumeCapabilities,
+    SetSessionConfigOptionResponse,
+    SetSessionModelResponse,
+    SetSessionModeResponse,
     SseMcpServer,
     TextContentBlock,
     TextResourceContents,
-    AgentAuthCapabilities, AgentCapabilities, AuthEnvVar, AuthenticateResponse,
-    AvailableCommand, CloseSessionResponse,
-    CurrentModeUpdate, EnvVarAuthMethod,
-    ListSessionsResponse, LoadSessionResponse,
-    McpCapabilities,
-    ModelInfo, PromptCapabilities, SessionInfo, SessionInfoUpdate,
-    SessionConfigOptionSelect, SessionConfigSelectOption,
-    SessionListCapabilities, SessionMode, SessionModeState,
-    SessionModelState,
-    SetSessionConfigOptionResponse, SetSessionModeResponse,
-    SetSessionModelResponse, Usage,
-    ConfigOptionUpdate, Cost, ForkSessionResponse, ResumeSessionResponse,
-    SessionAdditionalDirectoriesCapabilities,
-    SessionCapabilities, SessionCloseCapabilities,
-    SessionForkCapabilities, SessionResumeCapabilities,
-    RequestPermissionRequest, RequestPermissionResponse,
-    UsageUpdate, ToolCallUpdate, ToolCallLocation,
+    ToolCallLocation,
+    ToolCallUpdate,
+    Usage,
+    UsageUpdate,
 )
 
 current_session_id = ContextVar("current_session_id")
@@ -81,13 +108,16 @@ _DEFAULT_SAVE_DIR = str(Path.home() / ".agy-acp" / "trajectories")
 _AVAILABLE_MODELS = [
     ModelInfo(model_id="gemini-3.5-flash", name="Gemini 3.5 Flash"),
     ModelInfo(model_id="gemini-3.1-pro-preview", name="Gemini 3.1 Pro"),
-    ModelInfo(model_id="gemini-3.1-pro-preview-customtools", name="Gemini 3.1 Pro (Custom Tools)"),
+    ModelInfo(
+        model_id="gemini-3.1-pro-preview-customtools",
+        name="Gemini 3.1 Pro (Custom Tools)",
+    ),
     ModelInfo(model_id="gemini-3.1-flash-lite", name="Gemini 3.1 Flash Lite"),
     ModelInfo(model_id="gemini-2.5-pro", name="Gemini 2.5 Pro"),
     ModelInfo(model_id="gemini-2.5-flash", name="Gemini 2.5 Flash"),
     ModelInfo(model_id="gemini-2.5-flash-lite", name="Gemini 2.5 Flash Lite"),
 ]
-_DEFAULT_MODEL_ID = "gemini-3.5-flash"
+_DEFAULT_MODEL_ID = "gemini-3.1-flash-lite"
 
 _THINKING_LEVELS = ["minimal", "low", "medium", "high"]
 _DEFAULT_THINKING_LEVEL = "medium"
@@ -107,6 +137,7 @@ _MODEL_PRICING: dict[str, tuple[float, float]] = {
 _LONG_CONTEXT_THRESHOLD = 200_000
 
 from google.antigravity.types import BuiltinTools
+
 # All SDK built-in tools except RUN_COMMAND auto-allow.
 # RUN_COMMAND and MCP server tools (mcp_* prefix) require IDE permission.
 _AUTO_ALLOW_TOOLS = {
@@ -123,7 +154,9 @@ _AUTO_ALLOW_TOOLS = {
 }
 
 
-def _get_token_rates(model_id: str, total_context_tokens: int) -> tuple[float, float] | None:
+def _get_token_rates(
+    model_id: str, total_context_tokens: int
+) -> tuple[float, float] | None:
     pricing = _MODEL_PRICING.get(model_id)
     if not pricing:
         return None
@@ -190,7 +223,7 @@ def _parse_mcp_request_text(args: dict) -> tuple[str | None, str | None]:
             start = request_text.index("{")
             embedded = json.loads(request_text[start:])
             return embedded.get("ServerName"), embedded.get("ToolName")
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError, ValueError:
             pass
     return None, None
 
@@ -217,7 +250,7 @@ def _permission_description(name: str, args: Any) -> str:
                 if mcp_args:
                     return "\n".join(f"- **{k}**: `{v}`" for k, v in mcp_args.items())
                 return "*(no arguments)*"
-            except (json.JSONDecodeError, ValueError):
+            except json.JSONDecodeError, ValueError:
                 pass
 
     # run_command: show working dir (command is already in the title)
@@ -250,9 +283,9 @@ def _tool_kind(name: str) -> str:
 
 _PLAN_LINE_RE = re.compile(
     r"^\s*(?:"
-    r"[-*]\s+\[([xX /\-])\]\s+(.*)"   # - [x] item  or  * [ ] item
-    r"|[-*]\s+(.*)"                      # - item  or  * item
-    r"|(\d+)\.\s+(.*)"                   # 1. item  or  23. item
+    r"[-*]\s+\[([xX /\-])\]\s+(.*)"  # - [x] item  or  * [ ] item
+    r"|[-*]\s+(.*)"  # - item  or  * item
+    r"|(\d+)\.\s+(.*)"  # 1. item  or  23. item
     r")$"
 )
 
@@ -288,7 +321,10 @@ def _convert_mcp_server(server: HttpMcpServer | SseMcpServer | McpServerStdio):
     if isinstance(server, (HttpMcpServer, SseMcpServer)):
         headers = {h.name: h.value for h in server.headers} if server.headers else {}
         return agy_types.McpStreamableHttpServer(
-            name=server.name, url=server.url, type="http", headers=headers,
+            name=server.name,
+            url=server.url,
+            type="http",
+            headers=headers,
         )
 
     # agy SDK gap: McpStdioServer has no env field,
@@ -307,12 +343,17 @@ def _convert_mcp_server(server: HttpMcpServer | SseMcpServer | McpServerStdio):
             f"os.execvp({server.command!r},[{server.command!r}]+{server.args!r})"
         )
         return agy_types.McpStdioServer(
-            name=server.name, command=sys.executable,
-            args=["-ISs", "-c", loader], type="stdio",
+            name=server.name,
+            command=sys.executable,
+            args=["-ISs", "-c", loader],
+            type="stdio",
         )
 
     return agy_types.McpStdioServer(
-        name=server.name, command=server.command, args=server.args, type="stdio",
+        name=server.name,
+        command=server.command,
+        args=server.args,
+        type="stdio",
     )
 
 
@@ -333,7 +374,9 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
     async def run(self, context: HookContext, data: agy.types.ToolCall) -> HookResult:
         session_id = current_session_id.get(None) or self.echo_agent._active_session_id
         if not session_id:
-            log.warning("No session ID found in context for tool call %s — denying", data.name)
+            log.warning(
+                "No session ID found in context for tool call %s — denying", data.name
+            )
             return HookResult(allow=False, message="No active session context")
 
         tool_call_id = data.id or uuid4().hex
@@ -347,16 +390,20 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
         log.debug("Intercepted tool call %s in session %s", data.name, session_id)
 
         if str(data.name) in _AUTO_ALLOW_TOOLS:
-            await self._send_start(session_id, tool_call_id, title, kind, locations, data.args)
+            await self._send_start(
+                session_id, tool_call_id, title, kind, locations, data.args
+            )
             return HookResult(allow=True)
 
         # Permission required — show the approval dialog first, don't send
         # the progress card yet (avoids duplicate cards in the IDE)
-        async def requester(request: RequestPermissionRequest) -> RequestPermissionResponse:
+        async def requester(
+            request: RequestPermissionRequest,
+        ) -> RequestPermissionResponse:
             return await self.echo_agent._conn.request_permission(
                 options=request.options,
                 session_id=request.session_id,
-                tool_call=request.tool_call
+                tool_call=request.tool_call,
             )
 
         tool_call = ToolCallUpdate(
@@ -379,7 +426,10 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
             )
             outcome = resp.outcome
             if outcome is None:
-                return HookResult(allow=False, message="The user declined this command. Ask what they'd like instead.")
+                return HookResult(
+                    allow=False,
+                    message="The user declined this command. Ask what they'd like instead.",
+                )
 
             if isinstance(outcome, dict):
                 option_id = outcome.get("optionId") or outcome.get("option_id")
@@ -391,25 +441,36 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
                 # Register tracker entry (for PostToolCallHook) but don't send
                 # a notification — the broker's request_for already showed the card
                 self.echo_agent._tracker.start(
-                    tool_call_id, title=title, kind=kind,
-                    locations=locations, raw_input=data.args,
+                    tool_call_id,
+                    title=title,
+                    kind=kind,
+                    locations=locations,
+                    raw_input=data.args,
                 )
                 return HookResult(allow=True)
             else:
                 log.debug("Tool call %s rejected/cancelled", data.name)
-                return HookResult(allow=False, message="The user declined this command. Ask what they'd like instead.")
+                return HookResult(
+                    allow=False,
+                    message="The user declined this command. Ask what they'd like instead.",
+                )
         except Exception as e:
             log.exception("Error requesting permission via broker")
-            return HookResult(allow=False, message=f"Internal permission broker error: {e}")
+            return HookResult(
+                allow=False, message=f"Internal permission broker error: {e}"
+            )
 
-    async def _send_start(self, session_id, tool_call_id, title, kind, locations, raw_input):
+    async def _send_start(
+        self, session_id, tool_call_id, title, kind, locations, raw_input
+    ):
         start = self.echo_agent._tracker.start(
-            tool_call_id, title=title, kind=kind,
-            locations=locations, raw_input=raw_input,
+            tool_call_id,
+            title=title,
+            kind=kind,
+            locations=locations,
+            raw_input=raw_input,
         )
-        await self.echo_agent._conn.session_update(
-            session_id=session_id, update=start)
-
+        await self.echo_agent._conn.session_update(session_id=session_id, update=start)
 
 
 class MyPostToolCallHook(PostToolCallHook):
@@ -433,13 +494,17 @@ class MyPostToolCallHook(PostToolCallHook):
             view = self.echo_agent._tracker.view(tc_id)
             if view.kind == "edit" and isinstance(view.raw_input, dict):
                 path = view.raw_input.get("path")
-                edit_info = self.echo_agent._last_file_edits.pop((session_id, path), None)
+                edit_info = self.echo_agent._last_file_edits.pop(
+                    (session_id, path), None
+                )
                 if edit_info:
-                    content = [tool_diff_content(
-                        path=path,
-                        new_text=edit_info["new_text"],
-                        old_text=edit_info["old_text"],
-                    )]
+                    content = [
+                        tool_diff_content(
+                            path=path,
+                            new_text=edit_info["new_text"],
+                            old_text=edit_info["old_text"],
+                        )
+                    ]
             elif view.kind == "execute":
                 exit_code = self.echo_agent._last_exit_codes.pop(session_id, None)
                 if exit_code is not None and exit_code != 0:
@@ -453,10 +518,11 @@ class MyPostToolCallHook(PostToolCallHook):
 
         try:
             progress = self.echo_agent._tracker.progress(
-                tc_id, status=status, content=content,
-                raw_output=raw_output)
+                tc_id, status=status, content=content, raw_output=raw_output
+            )
             await self.echo_agent._conn.session_update(
-                session_id=session_id, update=progress)
+                session_id=session_id, update=progress
+            )
         except KeyError:
             log.debug("post hook: unknown tracker id %s", tc_id)
 
@@ -495,7 +561,9 @@ class EchoAgent(Agent):
         if task and not task.done():
             task.cancel()
 
-    async def close_session(self, session_id: str, **kwargs: Any) -> CloseSessionResponse:
+    async def close_session(
+        self, session_id: str, **kwargs: Any
+    ) -> CloseSessionResponse:
         await self._agent.__aexit__(None, None, None)
         self._session_titles.pop(session_id, None)
         self._session_modes.pop(session_id, None)
@@ -513,7 +581,9 @@ class EchoAgent(Agent):
         self._store.delete(session_id)
         return CloseSessionResponse()
 
-    async def set_session_mode(self, mode_id: str, session_id: str, **kwargs: Any) -> SetSessionModeResponse:
+    async def set_session_mode(
+        self, mode_id: str, session_id: str, **kwargs: Any
+    ) -> SetSessionModeResponse:
         log.debug("set_session_mode mode=%s session=%s", mode_id, session_id)
         self._session_modes[session_id] = mode_id
         await self._conn.session_update(
@@ -528,20 +598,34 @@ class EchoAgent(Agent):
     def _build_config_options(self, session_id: str) -> list[SessionConfigOptionSelect]:
         current_mode = self._session_modes.get(session_id, "agent")
         current_model = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
-        current_thinking = self._session_thinking_levels.get(session_id, _DEFAULT_THINKING_LEVEL)
+        current_thinking = self._session_thinking_levels.get(
+            session_id, _DEFAULT_THINKING_LEVEL
+        )
         return [
             SessionConfigOptionSelect(
-                id="mode", name="Mode", type="select",
+                id="mode",
+                name="Mode",
+                type="select",
                 description="Controls agent behavior",
                 category="mode",
                 current_value=current_mode,
                 options=[
-                    SessionConfigSelectOption(value="agent", name="Agent", description="Execute tools autonomously"),
-                    SessionConfigSelectOption(value="plan", name="Plan", description="Produce a plan without executing tools"),
+                    SessionConfigSelectOption(
+                        value="agent",
+                        name="Agent",
+                        description="Execute tools autonomously",
+                    ),
+                    SessionConfigSelectOption(
+                        value="plan",
+                        name="Plan",
+                        description="Produce a plan without executing tools",
+                    ),
                 ],
             ),
             SessionConfigOptionSelect(
-                id="model", name="Model", type="select",
+                id="model",
+                name="Model",
+                type="select",
                 description="Gemini model to use",
                 category="model",
                 current_value=current_model,
@@ -551,7 +635,9 @@ class EchoAgent(Agent):
                 ],
             ),
             SessionConfigOptionSelect(
-                id="thinking_level", name="Thinking", type="select",
+                id="thinking_level",
+                name="Thinking",
+                type="select",
                 description="Controls depth of reasoning (3.x models only, ignored for 2.x)",
                 category="model",
                 current_value=current_thinking,
@@ -564,9 +650,18 @@ class EchoAgent(Agent):
 
     # https://agentclientprotocol.com/protocol/v1/session-config-options
     async def set_config_option(
-        self, config_id: str, session_id: str, value: str | bool, **kwargs: Any,
+        self,
+        config_id: str,
+        session_id: str,
+        value: str | bool,
+        **kwargs: Any,
     ) -> SetSessionConfigOptionResponse:
-        log.debug("set_config_option config_id=%s value=%s session=%s", config_id, value, session_id)
+        log.debug(
+            "set_config_option config_id=%s value=%s session=%s",
+            config_id,
+            value,
+            session_id,
+        )
         if config_id == "mode" and isinstance(value, str):
             self._session_modes[session_id] = value
             await self._conn.session_update(
@@ -578,10 +673,16 @@ class EchoAgent(Agent):
             )
         elif config_id == "model" and isinstance(value, str):
             self._session_models[session_id] = value
-            await self._rebuild_agent(session_id, conversation_id=getattr(self._agent, "conversation_id", None))
+            await self._rebuild_agent(
+                session_id,
+                conversation_id=getattr(self._agent, "conversation_id", None),
+            )
         elif config_id == "thinking_level" and isinstance(value, str):
             self._session_thinking_levels[session_id] = value
-            await self._rebuild_agent(session_id, conversation_id=getattr(self._agent, "conversation_id", None))
+            await self._rebuild_agent(
+                session_id,
+                conversation_id=getattr(self._agent, "conversation_id", None),
+            )
         updated = self._build_config_options(session_id)
         await self._conn.session_update(
             session_id=session_id,
@@ -592,7 +693,9 @@ class EchoAgent(Agent):
         )
         return SetSessionConfigOptionResponse(config_options=updated)
 
-    async def authenticate(self, method_id: str, **kwargs: Any) -> AuthenticateResponse | None:
+    async def authenticate(
+        self, method_id: str, **kwargs: Any
+    ) -> AuthenticateResponse | None:
         log.debug("authenticate method_id=%s", method_id)
         if method_id == "gemini_api_key":
             key = os.environ.get("GEMINI_API_KEY")
@@ -608,22 +711,28 @@ class EchoAgent(Agent):
         )
 
     async def _rebuild_agent(
-        self, session_id: str,
+        self,
+        session_id: str,
         conversation_id: str | None = None,
         save_dir: str | None = None,
     ) -> None:
         """Tear down and recreate the Antigravity agent with current model/thinking settings."""
         model_id = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
-        thinking = self._session_thinking_levels.get(session_id, _DEFAULT_THINKING_LEVEL)
+        thinking = self._session_thinking_levels.get(
+            session_id, _DEFAULT_THINKING_LEVEL
+        )
 
         old_agent = self._agent
         await old_agent.__aexit__(None, None, None)
 
         from google.antigravity import types as agy_types
+
         try:
             disabled_tools, custom_tools = self._build_tools_config()
             config = self._agent_config_t(
-                capabilities=agy_types.CapabilitiesConfig(disabled_tools=disabled_tools),
+                capabilities=agy_types.CapabilitiesConfig(
+                    disabled_tools=disabled_tools
+                ),
                 policies=[agy_policy.allow_all()],
                 tools=custom_tools,
                 gemini_config=agy_types.GeminiConfig(
@@ -632,14 +741,17 @@ class EchoAgent(Agent):
                             name=model_id,
                             generation=agy_types.GenerationConfig(
                                 # 2.5 models don't support thinking level
-                                thinking_level=agy_types.ThinkingLevel(thinking) if not model_id.startswith("gemini-2.") else None,
+                                thinking_level=agy_types.ThinkingLevel(thinking)
+                                if not model_id.startswith("gemini-2.")
+                                else None,
                             ),
                         ),
                     ),
                 ),
                 conversation_id=conversation_id,
                 save_dir=save_dir or _DEFAULT_SAVE_DIR,
-                workspaces=[getattr(self, "_cwd", ".")] + self._session_additional_dirs.get(session_id, []),
+                workspaces=[getattr(self, "_cwd", ".")]
+                + self._session_additional_dirs.get(session_id, []),
                 mcp_servers=self._session_mcp_servers.get(session_id) or None,
             )
             new_agent = self._agent_t(config)
@@ -652,14 +764,24 @@ class EchoAgent(Agent):
             await old_agent.__aenter__()
             self._agent = old_agent
             raise
-        log.debug("rebuilt agent model=%s thinking=%s conv=%s", model_id, thinking, conversation_id)
+        log.debug(
+            "rebuilt agent model=%s thinking=%s conv=%s",
+            model_id,
+            thinking,
+            conversation_id,
+        )
 
     async def set_session_model(
-        self, model_id: str, session_id: str, **kwargs: Any,
+        self,
+        model_id: str,
+        session_id: str,
+        **kwargs: Any,
     ) -> SetSessionModelResponse | None:
         log.debug("set_session_model model=%s session=%s", model_id, session_id)
         self._session_models[session_id] = model_id
-        await self._rebuild_agent(session_id, conversation_id=getattr(self._agent, "conversation_id", None))
+        await self._rebuild_agent(
+            session_id, conversation_id=getattr(self._agent, "conversation_id", None)
+        )
         return SetSessionModelResponse()
 
     async def fork_session(
@@ -674,14 +796,18 @@ class EchoAgent(Agent):
         new_id = uuid4().hex
         mode = self._session_modes.get(session_id, "agent")
         model = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
-        thinking = self._session_thinking_levels.get(session_id, _DEFAULT_THINKING_LEVEL)
+        thinking = self._session_thinking_levels.get(
+            session_id, _DEFAULT_THINKING_LEVEL
+        )
         title = self._session_titles.get(session_id)
 
         self._cwd = cwd
         self._session_modes[new_id] = mode
         self._session_models[new_id] = model
         self._session_thinking_levels[new_id] = thinking
-        self._session_additional_dirs[new_id] = additional_directories or self._session_additional_dirs.get(session_id, [])
+        self._session_additional_dirs[new_id] = (
+            additional_directories or self._session_additional_dirs.get(session_id, [])
+        )
         if mcp_servers:
             self._session_mcp_servers[new_id] = _convert_mcp_servers(mcp_servers) or []
         elif session_id in self._session_mcp_servers:
@@ -689,16 +815,19 @@ class EchoAgent(Agent):
         if title:
             self._session_titles[new_id] = f"{title} (fork)"
 
-        self._store.save(new_id, {
-            "session_id": new_id,
-            "conversation_id": None,
-            "cwd": cwd,
-            "mode": mode,
-            "model": model,
-            "thinking_level": thinking,
-            "title": self._session_titles.get(new_id),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        })
+        self._store.save(
+            new_id,
+            {
+                "session_id": new_id,
+                "conversation_id": None,
+                "cwd": cwd,
+                "mode": mode,
+                "model": model,
+                "thinking_level": thinking,
+                "title": self._session_titles.get(new_id),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
         asyncio.ensure_future(self._send_available_commands(new_id))
 
@@ -707,8 +836,16 @@ class EchoAgent(Agent):
             modes=SessionModeState(
                 current_mode_id=mode,
                 available_modes=[
-                    SessionMode(id="agent", name="Agent", description="Execute tools autonomously"),
-                    SessionMode(id="plan", name="Plan", description="Produce a plan without executing tools"),
+                    SessionMode(
+                        id="agent",
+                        name="Agent",
+                        description="Execute tools autonomously",
+                    ),
+                    SessionMode(
+                        id="plan",
+                        name="Plan",
+                        description="Produce a plan without executing tools",
+                    ),
                 ],
             ),
             models=self._build_model_state(new_id),
@@ -754,8 +891,16 @@ class EchoAgent(Agent):
             modes=SessionModeState(
                 current_mode_id=mode,
                 available_modes=[
-                    SessionMode(id="agent", name="Agent", description="Execute tools autonomously"),
-                    SessionMode(id="plan", name="Plan", description="Produce a plan without executing tools"),
+                    SessionMode(
+                        id="agent",
+                        name="Agent",
+                        description="Execute tools autonomously",
+                    ),
+                    SessionMode(
+                        id="plan",
+                        name="Plan",
+                        description="Produce a plan without executing tools",
+                    ),
                 ],
             ),
             models=self._build_model_state(session_id),
@@ -819,8 +964,16 @@ class EchoAgent(Agent):
             modes=SessionModeState(
                 current_mode_id=mode,
                 available_modes=[
-                    SessionMode(id="agent", name="Agent", description="Execute tools autonomously"),
-                    SessionMode(id="plan", name="Plan", description="Produce a plan without executing tools"),
+                    SessionMode(
+                        id="agent",
+                        name="Agent",
+                        description="Execute tools autonomously",
+                    ),
+                    SessionMode(
+                        id="plan",
+                        name="Plan",
+                        description="Produce a plan without executing tools",
+                    ),
                 ],
             ),
             models=self._build_model_state(session_id),
@@ -839,6 +992,7 @@ class EchoAgent(Agent):
     def _build_tools_config(self) -> tuple[list, list]:
         """Build disabled_tools and custom tools lists based on client capabilities."""
         from google.antigravity import types as agy_types
+
         can_read, can_write, can_terminal = self._check_client_caps()
         disabled = []
         tools = []
@@ -861,7 +1015,11 @@ class EchoAgent(Agent):
         client_info: Implementation | None = None,
         **kwargs: Any,
     ) -> InitializeResponse:
-        log.debug("initialize client_info=%s client_capabilities=%s", client_info, client_capabilities)
+        log.debug(
+            "initialize client_info=%s client_capabilities=%s",
+            client_info,
+            client_capabilities,
+        )
         self._client_capabilities = client_capabilities
 
         from google.antigravity import types as agy_types
@@ -886,8 +1044,13 @@ class EchoAgent(Agent):
             """Creates a new file with the specified content via the IDE."""
             try:
                 sid = agent_ref._active_session_id
-                agent_ref._last_file_edits[(sid, path)] = {"old_text": None, "new_text": content}
-                await agent_ref._conn.write_text_file(content=content, path=path, session_id=sid)
+                agent_ref._last_file_edits[(sid, path)] = {
+                    "old_text": None,
+                    "new_text": content,
+                }
+                await agent_ref._conn.write_text_file(
+                    content=content, path=path, session_id=sid
+                )
                 return f"Successfully created file: {path}"
             except Exception as e:
                 return f"Error: Failed to create file '{path}': {e}"
@@ -901,8 +1064,13 @@ class EchoAgent(Agent):
                 if old_string not in old_text:
                     return f"Error: old_string not found in '{path}'"
                 new_text = old_text.replace(old_string, new_string, 1)
-                agent_ref._last_file_edits[(sid, path)] = {"old_text": old_text, "new_text": new_text}
-                await agent_ref._conn.write_text_file(content=new_text, path=path, session_id=sid)
+                agent_ref._last_file_edits[(sid, path)] = {
+                    "old_text": old_text,
+                    "new_text": new_text,
+                }
+                await agent_ref._conn.write_text_file(
+                    content=new_text, path=path, session_id=sid
+                )
                 return f"Successfully edited file: {path}"
             except Exception as e:
                 return f"Error: Failed to edit file '{path}': {e}"
@@ -911,12 +1079,20 @@ class EchoAgent(Agent):
             """Runs a shell command in an IDE-managed terminal."""
             try:
                 sid = agent_ref._active_session_id
-                term_resp = await agent_ref._conn.create_terminal(command=command, session_id=sid)
+                term_resp = await agent_ref._conn.create_terminal(
+                    command=command, session_id=sid
+                )
                 terminal_id = term_resp.terminal_id
                 agent_ref._last_terminal_ids[sid] = terminal_id
-                exit_resp = await agent_ref._conn.wait_for_terminal_exit(session_id=sid, terminal_id=terminal_id)
-                out_resp = await agent_ref._conn.terminal_output(session_id=sid, terminal_id=terminal_id)
-                await agent_ref._conn.release_terminal(session_id=sid, terminal_id=terminal_id)
+                exit_resp = await agent_ref._conn.wait_for_terminal_exit(
+                    session_id=sid, terminal_id=terminal_id
+                )
+                out_resp = await agent_ref._conn.terminal_output(
+                    session_id=sid, terminal_id=terminal_id
+                )
+                await agent_ref._conn.release_terminal(
+                    session_id=sid, terminal_id=terminal_id
+                )
                 exit_code = getattr(exit_resp, "exit_code", None)
                 if exit_code is not None:
                     agent_ref._last_exit_codes[sid] = exit_code
@@ -947,11 +1123,15 @@ class EchoAgent(Agent):
 
         return InitializeResponse(
             protocol_version=protocol_version,
-            agent_info=Implementation(name="agy-acp", version="0.1.0", title="Antigravity ACP Adapter"),
+            agent_info=Implementation(
+                name="agy-acp", version="0.1.0", title="Antigravity ACP Adapter"
+            ),
             agent_capabilities=AgentCapabilities(
                 auth=AgentAuthCapabilities(),
                 prompt_capabilities=PromptCapabilities(
-                    image=True, audio=True, embedded_context=True,
+                    image=True,
+                    audio=True,
+                    embedded_context=True,
                 ),
                 session_capabilities=SessionCapabilities(
                     additional_directories=SessionAdditionalDirectoriesCapabilities(),
@@ -988,7 +1168,9 @@ class EchoAgent(Agent):
 
         # Wire cwd + additional_directories to workspaces
         workspaces = [cwd] + (additional_directories or [])
-        if hasattr(self._agent, "_config") and hasattr(self._agent._config, "workspaces"):
+        if hasattr(self._agent, "_config") and hasattr(
+            self._agent._config, "workspaces"
+        ):
             self._agent._config.workspaces = workspaces
 
         self._session_modes[session_id] = "agent"
@@ -1005,8 +1187,16 @@ class EchoAgent(Agent):
             modes=SessionModeState(
                 current_mode_id="agent",
                 available_modes=[
-                    SessionMode(id="agent", name="Agent", description="Execute tools autonomously"),
-                    SessionMode(id="plan", name="Plan", description="Produce a plan without executing tools"),
+                    SessionMode(
+                        id="agent",
+                        name="Agent",
+                        description="Execute tools autonomously",
+                    ),
+                    SessionMode(
+                        id="plan",
+                        name="Plan",
+                        description="Produce a plan without executing tools",
+                    ),
                 ],
             ),
             models=self._build_model_state(session_id),
@@ -1016,16 +1206,29 @@ class EchoAgent(Agent):
     async def _send_available_commands(self, session_id: str) -> None:
         await self._conn.session_update(
             session_id=session_id,
-            update=update_available_commands([
-                AvailableCommand(name="reset", description="Clear conversation history"),
-                AvailableCommand(name="clear", description="Clear conversation history"),
-                AvailableCommand(name="cost", description="Show session cost"),
-                AvailableCommand(name="usage", description="Show token usage"),
-                AvailableCommand(name="model", description="Show or switch model"),
-                AvailableCommand(name="thinking", description="Show or switch thinking level"),
-                AvailableCommand(name="compact", description="Summarize conversation and start fresh context"),
-                AvailableCommand(name="help", description="Show available commands"),
-            ]),
+            update=update_available_commands(
+                [
+                    AvailableCommand(
+                        name="reset", description="Clear conversation history"
+                    ),
+                    AvailableCommand(
+                        name="clear", description="Clear conversation history"
+                    ),
+                    AvailableCommand(name="cost", description="Show session cost"),
+                    AvailableCommand(name="usage", description="Show token usage"),
+                    AvailableCommand(name="model", description="Show or switch model"),
+                    AvailableCommand(
+                        name="thinking", description="Show or switch thinking level"
+                    ),
+                    AvailableCommand(
+                        name="compact",
+                        description="Summarize conversation and start fresh context",
+                    ),
+                    AvailableCommand(
+                        name="help", description="Show available commands"
+                    ),
+                ]
+            ),
         )
 
     async def _handle_command(self, text: str, session_id: str) -> str | None:
@@ -1073,20 +1276,31 @@ class EchoAgent(Agent):
             if arg:
                 valid = {m.model_id for m in _AVAILABLE_MODELS}
                 if arg not in valid:
-                    return f"Unknown model `{arg}`. Available: {', '.join(sorted(valid))}"
-                await self.set_config_option(config_id="model", session_id=session_id, value=arg)
+                    return (
+                        f"Unknown model `{arg}`. Available: {', '.join(sorted(valid))}"
+                    )
+                await self.set_config_option(
+                    config_id="model", session_id=session_id, value=arg
+                )
                 return f"Switched to **{arg}**."
             current = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
-            models = "\n".join(f"- {'**' if m.model_id == current else ''}`{m.model_id}`{'**' if m.model_id == current else ''} — {m.name}" for m in _AVAILABLE_MODELS)
+            models = "\n".join(
+                f"- {'**' if m.model_id == current else ''}`{m.model_id}`{'**' if m.model_id == current else ''} — {m.name}"
+                for m in _AVAILABLE_MODELS
+            )
             return f"Current: **{current}**\n\n{models}"
 
         if name == "thinking":
             if arg:
                 if arg not in _THINKING_LEVELS:
                     return f"Unknown level `{arg}`. Available: {', '.join(_THINKING_LEVELS)}"
-                await self.set_config_option(config_id="thinking_level", session_id=session_id, value=arg)
+                await self.set_config_option(
+                    config_id="thinking_level", session_id=session_id, value=arg
+                )
                 return f"Thinking set to **{arg}**."
-            current = self._session_thinking_levels.get(session_id, _DEFAULT_THINKING_LEVEL)
+            current = self._session_thinking_levels.get(
+                session_id, _DEFAULT_THINKING_LEVEL
+            )
             return f"Current: **{current}**\nAvailable: {', '.join(_THINKING_LEVELS)}"
 
         if name == "compact":
@@ -1102,7 +1316,7 @@ class EchoAgent(Agent):
             | AudioContentBlock
             | ResourceContentBlock
             | EmbeddedResourceContentBlock
-            ],
+        ],
         session_id: str,
         message_id: str | None = None,
         **kwargs: Any,
@@ -1117,22 +1331,32 @@ class EchoAgent(Agent):
                 case TextContentBlock(text=text):
                     parts.append(text)
                 case ImageContentBlock(data=data, mime_type=mime):
-                    parts.append(agy.types.Image(
-                        data=base64.b64decode(data),
-                        mime_type=mime,
-                    ))
+                    parts.append(
+                        agy.types.Image(
+                            data=base64.b64decode(data),
+                            mime_type=mime,
+                        )
+                    )
                 case AudioContentBlock(data=data, mime_type=mime):
-                    parts.append(agy.types.Audio(
-                        data=base64.b64decode(data),
-                        mime_type=mime,
-                    ))
-                case EmbeddedResourceContentBlock(resource=TextResourceContents(text=text)):
+                    parts.append(
+                        agy.types.Audio(
+                            data=base64.b64decode(data),
+                            mime_type=mime,
+                        )
+                    )
+                case EmbeddedResourceContentBlock(
+                    resource=TextResourceContents(text=text)
+                ):
                     parts.append(text)
-                case EmbeddedResourceContentBlock(resource=BlobResourceContents(blob=blob, mime_type=mime)):
-                    parts.append(agy.types.Document(
-                        data=base64.b64decode(blob),
-                        mime_type=mime or "application/octet-stream",
-                    ))
+                case EmbeddedResourceContentBlock(
+                    resource=BlobResourceContents(blob=blob, mime_type=mime)
+                ):
+                    parts.append(
+                        agy.types.Document(
+                            data=base64.b64decode(blob),
+                            mime_type=mime or "application/octet-stream",
+                        )
+                    )
                 case ResourceContentBlock(uri=uri, name=name):
                     parts.append(f"[Attached resource: {name}]({uri})")
                 case _:
@@ -1147,11 +1371,14 @@ class EchoAgent(Agent):
         if cmd_result is not None:
             await self._conn.session_update(
                 session_id=session_id,
-                update=update_agent_message(text_block(cmd_result)))
+                update=update_agent_message(text_block(cmd_result)),
+            )
             return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
 
         if self._session_modes.get(session_id) == "plan":
-            parts.append("\n[PLAN MODE: Produce a step-by-step plan. Do not execute any tools.]")
+            parts.append(
+                "\n[PLAN MODE: Produce a step-by-step plan. Do not execute any tools.]"
+            )
 
         if session_id not in self._session_titles:
             first_text = next((p for p in parts if isinstance(p, str)), None)
@@ -1183,8 +1410,8 @@ class EchoAgent(Agent):
                 match chunk:
                     case agy.types.Thought(text=t):
                         await self._conn.session_update(
-                            session_id=session_id,
-                            update=update_agent_thought_text(t))
+                            session_id=session_id, update=update_agent_thought_text(t)
+                        )
 
                         thought_lines.extend(t.split("\n"))
                         entries = _parse_plan_entries(thought_lines)
@@ -1197,7 +1424,8 @@ class EchoAgent(Agent):
                     case agy.types.Text(text=t):
                         await self._conn.session_update(
                             session_id=session_id,
-                            update=update_agent_message(text_block(t)))
+                            update=update_agent_message(text_block(t)),
+                        )
                     case agy.types.ToolCall():
                         pass  # handled by PreToolCallDecideHook
                     case _:
@@ -1209,7 +1437,9 @@ class EchoAgent(Agent):
             terminal_id = self._last_terminal_ids.pop(session_id, None)
             if terminal_id:
                 try:
-                    await self._conn.release_terminal(session_id=session_id, terminal_id=terminal_id)
+                    await self._conn.release_terminal(
+                        session_id=session_id, terminal_id=terminal_id
+                    )
                 except Exception:
                     log.debug("failed to release terminal %s on cancel", terminal_id)
             stop_reason = "cancelled"
@@ -1217,7 +1447,8 @@ class EchoAgent(Agent):
             log.exception("error during agent chat")
             await self._conn.session_update(
                 session_id=session_id,
-                update=update_agent_message(text_block(f"Error: {e}")))
+                update=update_agent_message(text_block(f"Error: {e}")),
+            )
         finally:
             current_session_id.reset(token)
             self._active_session_id = None
@@ -1252,7 +1483,10 @@ class EchoAgent(Agent):
                             (meta.prompt_token_count or 0) * in_rate
                             + (meta.candidates_token_count or 0) * out_rate
                         ) / 1_000_000
-                        cumulative = self._session_cumulative_cost.get(session_id, 0.0) + turn_cost
+                        cumulative = (
+                            self._session_cumulative_cost.get(session_id, 0.0)
+                            + turn_cost
+                        )
                         self._session_cumulative_cost[session_id] = cumulative
                         cost = Cost(amount=round(cumulative, 6), currency="USD")
                     await self._conn.session_update(
@@ -1267,16 +1501,21 @@ class EchoAgent(Agent):
         except Exception:
             log.debug("usage extraction failed", exc_info=True)
 
-        self._store.save(session_id, {
-            "session_id": session_id,
-            "conversation_id": getattr(self._agent, "conversation_id", None),
-            "cwd": getattr(self, "_cwd", "."),
-            "mode": self._session_modes.get(session_id, "agent"),
-            "model": self._session_models.get(session_id, _DEFAULT_MODEL_ID),
-            "thinking_level": self._session_thinking_levels.get(session_id, _DEFAULT_THINKING_LEVEL),
-            "title": self._session_titles.get(session_id),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        })
+        self._store.save(
+            session_id,
+            {
+                "session_id": session_id,
+                "conversation_id": getattr(self._agent, "conversation_id", None),
+                "cwd": getattr(self, "_cwd", "."),
+                "mode": self._session_modes.get(session_id, "agent"),
+                "model": self._session_models.get(session_id, _DEFAULT_MODEL_ID),
+                "thinking_level": self._session_thinking_levels.get(
+                    session_id, _DEFAULT_THINKING_LEVEL
+                ),
+                "title": self._session_titles.get(session_id),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
         log.debug("returning PromptResponse stop_reason=%s", stop_reason)
         return PromptResponse(
@@ -1284,6 +1523,7 @@ class EchoAgent(Agent):
             stop_reason=stop_reason,
             usage=usage,
         )
+
 
 async def main() -> None:
     # use_unstable_protocol enables session/set_model and session/close RPCs
@@ -1293,6 +1533,7 @@ async def main() -> None:
         EchoAgent(agent_config_t=agy.LocalAgentConfig, agent_t=agy.Agent),
         use_unstable_protocol=True,
     )
+
 
 if __name__ == "__main__":
     asyncio.run(main())
