@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="620" height="380" viewBox="0 0 620 380">
+  <defs>
+    <g id="cb-on">
+      <rect width="15" height="15" rx="3" fill="#4a78a5" stroke="#6897bb" stroke-width="1"/>
+      <polyline points="3,7.5 6,11 12,4" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <g id="tool-checks">
+      <use href="#cb-on" x="0" y="0"/>
+      <text x="20" y="12" font-family="system-ui,sans-serif" font-size="11" fill="#bbb">Enabled</text>
+      <use href="#cb-on" x="86" y="0"/>
+      <text x="106" y="12" font-family="system-ui,sans-serif" font-size="11" fill="#bbb">Router-only</text>
+    </g>
+    <g id="btn">
+      <rect width="72" height="28" rx="4" fill="#45494a" stroke="#6b6b6b" stroke-width="1"/>
+    </g>
+    <g id="btn-primary">
+      <rect width="56" height="28" rx="4" fill="#4a78a5" stroke="#5a8ab5" stroke-width="1"/>
+    </g>
+  </defs>
+
+  <!-- Background -->
+  <rect width="620" height="380" rx="8" fill="#2b2d30"/>
+
+  <!-- Sidebar -->
+  <rect x="0" y="0" width="175" height="380" rx="8 0 0 8" fill="#313335"/>
+  <g font-family="system-ui,sans-serif" font-size="12" fill="#bbb">
+    <text x="14" y="30" fill="#999">&#x25BE; Tools</text>
+    <text x="30" y="52">AI Assistant</text>
+    <text x="24" y="78" fill="#999">&#x25BE; MCP Server</text>
+    <rect x="4" y="86" width="167" height="24" rx="4" fill="#2d5c8a"/>
+    <text x="44" y="103" fill="#e8a63a">Exposed Tools</text>
+  </g>
+
+  <!-- Main panel -->
+  <g transform="translate(188,16)">
+    <!-- Breadcrumb -->
+    <text font-family="system-ui,sans-serif" font-size="12" fill="#999">
+      <tspan fill="#bbb">Tools</tspan> &#x203A; <tspan fill="#bbb">MCP Server</tspan> &#x203A; <tspan fill="#bbb">Exposed Tools</tspan>
+    </text>
+
+    <!-- Router-only mode row -->
+    <text x="0" y="38" font-family="system-ui,sans-serif" font-size="12" fill="#bbb">Enable router-only mode for:</text>
+    <rect x="200" y="24" width="150" height="24" rx="4" fill="#45494a" stroke="#6b6b6b" stroke-width="1"/>
+    <text x="212" y="40" font-family="system-ui,sans-serif" font-size="11" fill="#bbb">ACP agents only</text>
+    <polyline points="332,33 338,38 344,33" fill="none" stroke="#999" stroke-width="1.2" stroke-linecap="round"/>
+
+    <!-- Search bar -->
+    <rect x="0" y="60" width="410" height="26" rx="4" fill="#45494a" stroke="#6b6b6b" stroke-width="1"/>
+    <text x="28" y="77" font-family="system-ui,sans-serif" font-size="11" fill="#888">Search tools</text>
+    <!-- Search icon -->
+    <circle cx="14" cy="73" r="5" fill="none" stroke="#888" stroke-width="1.2"/>
+    <line x1="18" y1="77" x2="21" y2="80" stroke="#888" stroke-width="1.2" stroke-linecap="round"/>
+
+    <!-- Counter -->
+    <text x="410" y="104" font-family="system-ui,sans-serif" font-size="11" fill="#888" text-anchor="end">62 enabled, 62 router-only</text>
+
+    <!-- Section header: Analysis -->
+    <g transform="translate(0,115)">
+      <text x="8" y="12" font-family="system-ui,sans-serif" font-size="12" fill="#bbb">&#x25BE; Analysis</text>
+      <line x1="80" y1="7" x2="246" y2="7" stroke="#505355" stroke-width="0.5"/>
+      <use href="#tool-checks" x="254" y="0"/>
+    </g>
+
+    <!-- Tool: analyze_calls -->
+    <g transform="translate(0,140)">
+      <text x="20" y="12" font-family="system-ui,sans-serif" font-size="12" font-weight="bold" fill="#ddd">analyze_calls</text>
+      <text x="20" y="27" font-family="system-ui,sans-serif" font-size="10" fill="#888">Builds the IDE Call Hierarchy tree for a method, function, constructor...</text>
+      <use href="#tool-checks" x="254" y="2"/>
+    </g>
+
+    <!-- Tool: build_project -->
+    <g transform="translate(0,176)">
+      <text x="20" y="12" font-family="system-ui,sans-serif" font-size="12" font-weight="bold" fill="#ddd">build_project</text>
+      <text x="20" y="27" font-family="system-ui,sans-serif" font-size="10" fill="#888">Triggers building of the project, waits for completion, returns build errors...</text>
+      <use href="#tool-checks" x="254" y="2"/>
+    </g>
+
+    <!-- Tool: get_file_problems -->
+    <g transform="translate(0,212)">
+      <text x="20" y="12" font-family="system-ui,sans-serif" font-size="12" font-weight="bold" fill="#ddd">get_file_problems</text>
+      <text x="20" y="27" font-family="system-ui,sans-serif" font-size="10" fill="#888">Analyzes the specified file for errors and warnings using IntelliJ inspections...</text>
+      <use href="#tool-checks" x="254" y="2"/>
+    </g>
+
+    <!-- Section header: Code Insight -->
+    <g transform="translate(0,252)">
+      <text x="8" y="12" font-family="system-ui,sans-serif" font-size="12" fill="#bbb">&#x25BE; Code Insight</text>
+      <line x1="100" y1="7" x2="246" y2="7" stroke="#505355" stroke-width="0.5"/>
+      <use href="#tool-checks" x="254" y="0"/>
+    </g>
+
+    <!-- Tool: get_symbol_info -->
+    <g transform="translate(0,277)">
+      <text x="20" y="12" font-family="system-ui,sans-serif" font-size="12" font-weight="bold" fill="#ddd">get_symbol_info</text>
+      <text x="20" y="27" font-family="system-ui,sans-serif" font-size="10" fill="#888">Retrieves information about the symbol at the specified position...</text>
+      <use href="#tool-checks" x="254" y="2"/>
+    </g>
+
+    <!-- More tools hint -->
+    <text x="20" y="314" font-family="system-ui,sans-serif" font-size="11" fill="#666">&#x22EE;</text>
+  </g>
+
+  <!-- Buttons -->
+  <g transform="translate(360,340)">
+    <use href="#btn" x="0" y="0"/>
+    <text x="17" y="18" font-family="system-ui,sans-serif" font-size="12" fill="#bbb">Cancel</text>
+    <use href="#btn" x="82" y="0"/>
+    <text x="101" y="18" font-family="system-ui,sans-serif" font-size="12" fill="#999">Apply</text>
+    <use href="#btn-primary" x="164" y="0"/>
+    <text x="182" y="18" font-family="system-ui,sans-serif" font-size="12" font-weight="bold" fill="#fff">OK</text>
+  </g>
+</svg>

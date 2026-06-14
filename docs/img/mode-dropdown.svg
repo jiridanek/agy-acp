@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="340" height="280" viewBox="0 0 340 280">
+  <defs>
+    <rect id="panel" width="310" height="250" rx="6" fill="#3c3f41" stroke="#505355" stroke-width="1"/>
+    <clipPath id="panel-clip"><rect width="310" height="250" rx="6"/></clipPath>
+  </defs>
+
+  <g transform="translate(15,15)">
+    <use href="#panel"/>
+    <g clip-path="url(#panel-clip)">
+      <!-- Selected row (highlighted) -->
+      <rect x="0" y="0" width="310" height="44" rx="0" fill="#2d5c8a"/>
+
+      <!-- Checkmark on selected -->
+      <text x="18" y="28" font-family="system-ui,sans-serif" font-size="16" fill="#bbb">&#x2713;</text>
+
+      <!-- Row labels -->
+      <text x="42" y="28" font-family="system-ui,sans-serif" font-size="14" fill="#ddd">Mode: Agent</text>
+      <text x="42" y="72" font-family="system-ui,sans-serif" font-size="14" fill="#bbb">Mode: Accept Edits</text>
+      <text x="42" y="116" font-family="system-ui,sans-serif" font-size="14" fill="#bbb">Mode: Plan</text>
+      <text x="42" y="160" font-family="system-ui,sans-serif" font-size="14" fill="#bbb">Mode: Don't Ask</text>
+      <text x="42" y="204" font-family="system-ui,sans-serif" font-size="14" fill="#bbb">Mode: Bypass Permissions</text>
+
+      <!-- Dividers -->
+      <line x1="10" y1="44" x2="300" y2="44" stroke="#505355" stroke-width="0.5"/>
+      <line x1="10" y1="88" x2="300" y2="88" stroke="#505355" stroke-width="0.5"/>
+      <line x1="10" y1="132" x2="300" y2="132" stroke="#505355" stroke-width="0.5"/>
+      <line x1="10" y1="176" x2="300" y2="176" stroke="#505355" stroke-width="0.5"/>
+      <line x1="10" y1="220" x2="300" y2="220" stroke="#505355" stroke-width="0.5"/>
+    </g>
+
+    <!-- Tooltip below -->
+    <rect x="0" y="225" width="310" height="25" rx="0 0 6 6" fill="#4b4e50"/>
+    <text x="12" y="242" font-family="system-ui,sans-serif" font-size="11" fill="#999">Standard behavior, prompts for dangerous operations</text>
+  </g>
+</svg>

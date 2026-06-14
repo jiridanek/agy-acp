@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="580" height="220" viewBox="0 0 580 220">
+  <defs>
+    <!-- Reusable sidebar item -->
+    <g id="sidebar-item">
+      <rect width="180" height="30" fill="none"/>
+    </g>
+    <!-- Checkbox checked -->
+    <g id="checkbox-on">
+      <rect width="16" height="16" rx="3" fill="#4a78a5" stroke="#6897bb" stroke-width="1"/>
+      <polyline points="3,8 7,12 13,4" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <!-- Combobox -->
+    <g id="combobox">
+      <rect width="120" height="28" rx="4" fill="#45494a" stroke="#6b6b6b" stroke-width="1"/>
+      <!-- Chevron -->
+      <polyline points="100,10 106,15 112,10" fill="none" stroke="#999" stroke-width="1.5" stroke-linecap="round"/>
+    </g>
+    <!-- Button -->
+    <g id="btn">
+      <rect width="72" height="28" rx="4" fill="#45494a" stroke="#6b6b6b" stroke-width="1"/>
+    </g>
+    <g id="btn-primary">
+      <rect width="56" height="28" rx="4" fill="#4a78a5" stroke="#5a8ab5" stroke-width="1"/>
+    </g>
+  </defs>
+
+  <!-- Background -->
+  <rect width="580" height="220" rx="8" fill="#2b2d30"/>
+
+  <!-- Sidebar -->
+  <rect x="0" y="0" width="195" height="220" rx="8 0 0 8" fill="#313335"/>
+
+  <!-- Sidebar items -->
+  <g font-family="system-ui,sans-serif" font-size="13" fill="#bbb">
+    <text x="14" y="35" fill="#999">&#x25BE; Tools</text>
+    <text x="30" y="62" fill="#999">&#x25BE; AI Assistant</text>
+    <!-- Selected item highlight -->
+    <rect x="4" y="72" width="187" height="26" rx="4" fill="#2d5c8a"/>
+    <text x="50" y="90" fill="#e8a63a">Agents</text>
+    <text x="50" y="117" fill="#bbb">Model Context Protocol</text>
+    <text x="50" y="144" fill="#bbb">Project Settings</text>
+  </g>
+
+  <!-- Main panel -->
+  <g transform="translate(210,25)">
+    <!-- Agent name + version -->
+    <text x="50" y="18" font-family="system-ui,sans-serif" font-size="15" font-weight="bold" fill="#ddd">goose</text>
+    <text x="106" y="18" font-family="system-ui,sans-serif" font-size="12" fill="#888">v1.37.0</text>
+    <text x="50" y="36" font-family="system-ui,sans-serif" font-size="11" fill="#888">A local, extensible, open source AI agent...</text>
+
+    <!-- Agent icon placeholder -->
+    <rect x="10" y="4" width="30" height="30" rx="4" fill="#45494a"/>
+    <text x="18" y="25" font-family="system-ui,sans-serif" font-size="16" fill="#999">&#x2736;</text>
+
+    <!-- MCP settings row -->
+    <g transform="translate(0,65)">
+      <!-- Checkbox -->
+      <use href="#checkbox-on" x="10" y="2"/>
+      <text x="34" y="14" font-family="system-ui,sans-serif" font-size="13" fill="#bbb">Pass custom MCP servers</text>
+
+      <!-- Second label + combobox on next line -->
+      <text x="10" y="42" font-family="system-ui,sans-serif" font-size="13" fill="#bbb">Pass IntelliJ MCP server</text>
+      <use href="#combobox" x="200" y="27"/>
+      <text x="213" y="46" font-family="system-ui,sans-serif" font-size="12" fill="#bbb">On demand</text>
+    </g>
+
+    <!-- Buttons -->
+    <g transform="translate(130,140)">
+      <use href="#btn" x="0" y="0"/>
+      <text x="17" y="18" font-family="system-ui,sans-serif" font-size="12" fill="#bbb">Cancel</text>
+
+      <use href="#btn" x="82" y="0"/>
+      <text x="101" y="18" font-family="system-ui,sans-serif" font-size="12" fill="#999">Apply</text>
+
+      <use href="#btn-primary" x="164" y="0"/>
+      <text x="182" y="18" font-family="system-ui,sans-serif" font-size="12" font-weight="bold" fill="#fff">OK</text>
+    </g>
+  </g>
+</svg>

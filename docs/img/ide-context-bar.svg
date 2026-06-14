@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="500" height="185" viewBox="0 0 500 185">
+  <defs>
+    <g id="chevron">
+      <polyline points="0,0 4,4 8,0" fill="none" stroke="#999" stroke-width="1.2" stroke-linecap="round"/>
+    </g>
+  </defs>
+
+  <!-- Background -->
+  <rect width="500" height="185" rx="8" fill="#2b2d30"/>
+
+  <!-- Single input area containing both rows -->
+  <rect x="20" y="12" width="460" height="120" rx="8" fill="#393b3d" stroke="#505355" stroke-width="1"/>
+
+  <!-- Row 1: placeholder text -->
+  <text x="38" y="42" font-family="system-ui,sans-serif" font-size="13" fill="#888">Type your task, use @ to add files or / for commands</text>
+
+  <!-- Expand icon (top-right corner of input) -->
+  <g transform="translate(452,20)" stroke="#888" stroke-width="1.3" fill="none" stroke-linecap="round">
+    <polyline points="0,10 0,0 10,0"/>
+    <polyline points="14,4 14,14 4,14"/>
+  </g>
+
+  <!-- Row 2: toolbar inside input area, near bottom -->
+  <g transform="translate(30,98)">
+    <!-- + button -->
+    <text x="0" y="14" font-family="system-ui,sans-serif" font-size="18" fill="#999">+</text>
+
+    <!-- Mode pill -->
+    <text x="30" y="14" font-family="system-ui,sans-serif" font-size="12" fill="#bbb">Mode: Agent</text>
+    <use href="#chevron" transform="translate(112,9)"/>
+
+    <!-- Model pill -->
+    <text x="140" y="14" font-family="system-ui,sans-serif" font-size="12" fill="#bbb">Model: Gemini 3.1 Flash Lite</text>
+    <use href="#chevron" transform="translate(320,9)"/>
+
+    <!-- Right-aligned icon cluster -->
+    <!-- > chevron -->
+    <text x="350" y="15" font-family="system-ui,sans-serif" font-size="16" fill="#888">&#x203A;</text>
+
+    <!-- Expand-with-cursor icon (IDE context) — HIGHLIGHTED -->
+    <rect x="368" y="-1" width="22" height="22" rx="4" fill="#4a78a5" stroke="#5a8ab5" stroke-width="1"/>
+    <g transform="translate(370,0.5) scale(1.15)" stroke="#fff" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M7 13H4a1.5 1.5 0 0 1-1.5-1.5V3.5A1.5 1.5 0 0 1 4 2h7a1.5 1.5 0 0 1 1.5 1.5V7"/>
+      <path d="M7 8.5l6 2.2-2.8.7-.7 2.8z"/>
+    </g>
+
+    <!-- Send arrow icon -->
+    <g transform="translate(400,-1)" stroke="#999" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 3l12 7-12 7V3z"/>
+      <line x1="4" y1="10" x2="10" y2="10"/>
+    </g>
+  </g>
+
+  <!-- Tooltip (no pointing chevron, just floating below) -->
+  <rect x="180" y="140" width="300" height="35" rx="6" fill="#4b4e50" stroke="#606366" stroke-width="1"/>
+  <text x="194" y="155" font-family="system-ui,sans-serif" font-size="11" font-weight="bold" fill="#ddd">IDE context enabled</text>
+  <text x="194" y="168" font-family="system-ui,sans-serif" font-size="10" fill="#999">Automatically adds relevant IDE context to your request.</text>
+</svg>

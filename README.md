@@ -1,6 +1,6 @@
 # agy-acp
 
-ACP (Agent Client Protocol) adapter that wraps Google's Antigravity SDK for use in JetBrains IDEs.
+ACP (Agent Client Protocol) adapter that wraps Google's Antigravity SDK for use in JetBrains IDEs and Zed.
 
 ## Prerequisites
 
@@ -53,6 +53,130 @@ Terminal/command execution is gated behind a registry flag in IntelliJ's ACP plu
 4. Restart the ACP session (or the IDE)
 
 Without this, the IDE sends `terminal=False` in its client capabilities and the agent falls back to the SDK's native command execution (commands run outside the IDE terminal UI).
+
+### Zed
+
+Add the agent to your Zed settings ([docs](https://zed.dev/docs/ai/external-agents#custom-agents)):
+
+**Settings > Extensions > Agent Servers**, or edit `~/.config/zed/settings.json`:
+
+```json
+{
+  "agent": {
+    "custom_agents": [
+      {
+        "id": "antigravity",
+        "name": "Antigravity",
+        "command": "/path/to/.venv/bin/python",
+        "args": ["/path/to/hellp.py"],
+        "env": {
+          "GEMINI_API_KEY": "your-key-here"
+        }
+      }
+    ]
+  }
+}
+```
+
+## IDE tools (IntelliJ MCP server)
+
+IntelliJ exposes IDE tools (build, inspections, symbol info, refactoring, debugger, etc.) via a built-in [MCP server](https://www.jetbrains.com/help/idea/mcp-server.html). The recommended way to connect these to the agent is via streamable-http as a custom MCP server, **not** via `use_idea_mcp` in `acp.json`.
+
+**Why not `use_idea_mcp`?** It passes the IDE's MCP server in router-only mode, exposing a single `execute_tool` wrapper with no tool schemas. The LLM struggles with this indirection. It also spawns a redundant `idea stdioMcpServer` process.
+
+**Recommended setup:**
+
+1. In IntelliJ, go to **Settings > Tools > MCP Server**
+2. Under Manual Client Configuration, click **Copy HTTP Stream Config**
+3. Paste into `.ai/mcp/mcp.json` in your project root (or create the file):
+
+```json
+{
+  "mcpServers": {
+    "idea": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:<port>/stream",
+      "headers": {
+        "IJ_MCP_SERVER_PROJECT_PATH": "/path/to/your/project"
+      }
+    }
+  }
+}
+```
+
+4. In **Settings > AI Assistant > Agents**, ensure **Pass custom MCP servers** is checked
+
+![IntelliJ MCP settings](docs/img/intellij-mcp-settings.svg)
+
+This gives the agent individual tools with full schemas. Key tools ([full list](https://www.jetbrains.com/help/ai-assistant/mcp.html#supported-tools)):
+
+| Category | Tools |
+|----------|-------|
+| Analysis | `build_project`, `get_file_problems`, `get_project_dependencies` |
+| Code Insight | `get_symbol_info` |
+| Refactoring | `rename_refactoring`, `reformat_file` |
+| Search | `search_symbol`, `search_text`, `search_regex` |
+| Execution | `execute_run_configuration`, `execute_terminal_command` |
+| VCS | `get_repositories`, `git_status` |
+| Debugger | via [`ij-debugger` skill](https://www.jetbrains.com/help/idea/mcp-server.html) (Find Action > "Copy Debugger Skill to Agents") |
+
+Toggle individual tools on/off in **Settings > Tools > MCP Server > Exposed Tools**.
+
+![IntelliJ MCP tools](docs/img/intellij-mcp-tools.svg)
+
+## Diagnostics
+
+### IntelliJ
+
+With the MCP server configured (see above), the agent can call `build_project` for build errors and `get_file_problems` for inspections/warnings.
+
+### Zed
+
+External ACP agents [cannot access Zed's LSP diagnostics](https://github.com/zed-industries/zed/discussions/58546). Workaround: the agent can run linters via `run_command` (e.g. `tsc --noEmit`, `cargo check`).
+
+For Go: [gopls v0.20+](https://go.dev/gopls/features/mcp) has built-in MCP mode with a `go_diagnostics` tool that can be configured as an MCP server.
+
+## IDE context
+
+Both IDEs can enrich prompts with editor state (open file, selection).
+
+### IntelliJ
+
+The "IDE context enabled" toggle in the chat bottom bar controls this. When enabled, IntelliJ adds two extra prompt blocks alongside your message:
+
+- A **resource link** with the open file's URI (no file content)
+- A **resource** with selection byte offsets (JSON, ~250 bytes)
+
+The agent reads the file via `view_file` only if needed. No full file content is sent automatically.
+
+![IDE context bar](docs/img/ide-context-bar.svg)
+
+### Zed
+
+Zed automatically includes active buffer context. Use `@` mentions to explicitly attach files, diagnostics, or symbols.
+
+## Modes
+
+The agent supports 5 permission modes that control how tool calls are handled:
+
+![Mode dropdown](docs/img/mode-dropdown.svg)
+
+| Mode | Read tools | File writes | Commands / MCP | Notes |
+|------|-----------|-------------|----------------|-------|
+| **Agent** (default) | auto-allow | prompt | prompt | Standard behavior |
+| **Accept Edits** | auto-allow | auto-allow | prompt | Auto-accepts file changes |
+| **Plan** | auto-allow | deny | prompt | File writes disabled, exploration OK |
+| **Don't Ask** | auto-allow | deny | deny | Silently denies non-safe tools |
+| **Bypass** | auto-allow | auto-allow | auto-allow | No permission checks |
+
+Switch modes via the Mode dropdown in the IDE, or via `set_session_mode` / `set_config_option` RPCs.
+
+## IntelliJ-specific behavior
+
+The agent detects IntelliJ via `client_info.name` containing "JetBrains" and adjusts:
+
+- `/model` and `/thinking` slash commands tell IntelliJ users to use the IDE dropdown instead (IntelliJ has a config feedback loop that overwrites agent-initiated changes)
+- The config feedback loop causes unnecessary agent rebuilds on each prompt — this is a known IntelliJ ACP plugin issue
 
 ## Testing
 
