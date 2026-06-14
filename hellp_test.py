@@ -1548,6 +1548,47 @@ async def test_offline_model_switch_preserves_conversation():
     assert configs_seen[-1].get("conversation_id") == "conv-keep-me-2"
 
 
+async def test_offline_set_config_option_unchanged_skips_rebuild():
+    """set_config_option with the current value should not trigger _rebuild_agent."""
+    import hellp
+
+    fake_agent = FakeAgent(config=None, responses=[])
+    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
+
+    client = MagicMock(spec=Client)
+    sut.on_connect(conn=client)
+
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+
+    rebuild_calls = 0
+    original_rebuild = sut._rebuild_agent
+
+    async def counting_rebuild(*a, **kw):
+        nonlocal rebuild_calls
+        rebuild_calls += 1
+        await original_rebuild(*a, **kw)
+
+    sut._rebuild_agent = counting_rebuild
+
+    default_model = sut._sessions[sid].model
+    default_thinking = sut._sessions[sid].thinking_level
+    default_context = sut._sessions[sid].context_level
+    default_mode = sut._sessions[sid].mode
+
+    # Re-send current values — should be no-ops
+    await sut.set_config_option(config_id="model", session_id=sid, value=default_model)
+    await sut.set_config_option(config_id="thinking_level", session_id=sid, value=default_thinking)
+    await sut.set_config_option(config_id="context", session_id=sid, value=default_context)
+    await sut.set_config_option(config_id="mode", session_id=sid, value=default_mode)
+    assert rebuild_calls == 0
+
+    # Changing a value should trigger rebuild
+    await sut.set_config_option(config_id="model", session_id=sid, value="gemini-2.5-flash")
+    assert rebuild_calls == 1
+
+
 async def test_offline_rebuild_agent_rollback():
     """If _rebuild_agent fails, the old agent is restored."""
     import hellp

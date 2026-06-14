@@ -176,7 +176,7 @@ Switch modes via the Mode dropdown in the IDE, or via `set_session_mode` / `set_
 The agent detects IntelliJ via `client_info.name` containing "JetBrains" and adjusts:
 
 - `/model` and `/thinking` slash commands tell IntelliJ users to use the IDE dropdown instead (IntelliJ has a config feedback loop that overwrites agent-initiated changes)
-- The config feedback loop causes unnecessary agent rebuilds on each prompt — this is a known IntelliJ ACP plugin issue
+- The config feedback loop (IDE echoes back current values after each prompt) is handled by short-circuiting `set_config_option` when the value hasn't changed, avoiding unnecessary agent rebuilds
 
 ## Testing
 

@@ -846,6 +846,19 @@ class EchoAgent(Agent):
             session_id,
         )
         s = self._sessions[session_id]
+        # IDE clients (e.g. IntelliJ) echo back current config values after each
+        # prompt — skip the expensive _rebuild_agent when nothing actually changed.
+        current = {
+            "mode": s.mode,
+            "model": s.model,
+            "thinking_level": s.thinking_level,
+            "context": s.context_level,
+        }
+        if isinstance(value, str) and current.get(config_id) == value:
+            log.debug("set_config_option: value unchanged, skipping")
+            return SetSessionConfigOptionResponse(
+                config_options=self._build_config_options(session_id)
+            )
         if config_id == "mode" and isinstance(value, str):
             s.mode = value
             await self._conn.session_update(
