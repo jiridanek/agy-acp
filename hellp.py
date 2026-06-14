@@ -712,7 +712,7 @@ class EchoAgent(Agent):
         self._sessions: dict[str, SessionState] = {}
         self._active_session_id: str | None = None
         self._session_additional_dirs: dict[str, list[str]] = {}
-        self._session_mcp_servers: dict[str, list] = {}
+        self._session_mcp_servers_raw: dict[str, list] = {}  # original ACP objects, re-converted on each rebuild (env workaround creates single-use temp files)
         self._session_cumulative_cost: dict[str, float] = {}
         self._last_file_edits: dict[tuple[str, str], dict[str, str | None]] = {}
         self._last_terminal_ids: dict[str, str] = {}
@@ -745,7 +745,7 @@ class EchoAgent(Agent):
         await self._agent.__aexit__(None, None, None)
         self._sessions.pop(session_id, None)
         self._session_additional_dirs.pop(session_id, None)
-        self._session_mcp_servers.pop(session_id, None)
+        self._session_mcp_servers_raw.pop(session_id, None)
         self._session_cumulative_cost.pop(session_id, None)
         self._active_tasks.pop(session_id, None)
         self._last_terminal_ids.pop(session_id, None)
@@ -944,7 +944,7 @@ class EchoAgent(Agent):
                 save_dir=save_dir or _DEFAULT_SAVE_DIR,
                 workspaces=[getattr(self, "_cwd", ".")]
                 + self._session_additional_dirs.get(session_id, []),
-                mcp_servers=self._session_mcp_servers.get(session_id) or None,
+                mcp_servers=_convert_mcp_servers(self._session_mcp_servers_raw.get(session_id)),
                 skills_paths=_skills_paths(getattr(self, "_cwd", ".")),
             )
             new_agent = self._agent_t(config)
@@ -1005,9 +1005,9 @@ class EchoAgent(Agent):
             additional_directories or self._session_additional_dirs.get(session_id, [])
         )
         if mcp_servers:
-            self._session_mcp_servers[new_id] = _convert_mcp_servers(mcp_servers) or []
-        elif session_id in self._session_mcp_servers:
-            self._session_mcp_servers[new_id] = self._session_mcp_servers[session_id]
+            self._session_mcp_servers_raw[new_id] = list(mcp_servers)
+        elif session_id in self._session_mcp_servers_raw:
+            self._session_mcp_servers_raw[new_id] = self._session_mcp_servers_raw[session_id]
 
         self._store.save(new_id, self._sessions[new_id])
 
@@ -1037,9 +1037,8 @@ class EchoAgent(Agent):
         stored.cwd = cwd
         self._sessions[session_id] = stored
         self._session_additional_dirs[session_id] = additional_directories or []
-        converted = _convert_mcp_servers(mcp_servers)
-        if converted:
-            self._session_mcp_servers[session_id] = converted
+        if mcp_servers:
+            self._session_mcp_servers_raw[session_id] = list(mcp_servers)
 
         if stored.conversation_id:
             log.debug("resuming conversation %s", stored.conversation_id)
@@ -1089,9 +1088,8 @@ class EchoAgent(Agent):
         stored.cwd = cwd
         self._sessions[session_id] = stored
         self._session_additional_dirs[session_id] = additional_directories or []
-        converted = _convert_mcp_servers(mcp_servers)
-        if converted:
-            self._session_mcp_servers[session_id] = converted
+        if mcp_servers:
+            self._session_mcp_servers_raw[session_id] = list(mcp_servers)
 
         if stored.conversation_id:
             log.debug("restoring conversation %s for session %s", stored.conversation_id, session_id)
@@ -1328,9 +1326,8 @@ class EchoAgent(Agent):
         )
         self._session_additional_dirs[session_id] = additional_directories or []
         _log_mcp_servers("new_session", mcp_servers)
-        converted = _convert_mcp_servers(mcp_servers)
-        if converted:
-            self._session_mcp_servers[session_id] = converted
+        if mcp_servers:
+            self._session_mcp_servers_raw[session_id] = list(mcp_servers)
         asyncio.ensure_future(self._send_available_commands(session_id))
 
         return NewSessionResponse(
