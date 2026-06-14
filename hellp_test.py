@@ -785,6 +785,9 @@ async def test_offline_rich_tool_outputs():
     session = await sut.new_session(cwd=".")
     sid = session.session_id
 
+    # Use accept_edits mode so edit_file auto-allows (sends start notification)
+    sut._sessions[sid].mode = "accept_edits"
+
     # Pre-populate state that tool functions would set during execution
     sut._last_file_edits[(sid, "foo.txt")] = {
         "old_text": "old contents",
@@ -806,7 +809,7 @@ async def test_offline_rich_tool_outputs():
     starts = [u for u in updates if u.session_update == "tool_call"]
     progress = [u for u in updates if u.session_update == "tool_call_update"]
 
-    # edit_file is auto-allowed → sends start notification
+    # In accept_edits mode, edit_file auto-allows → sends start notification
     # run_command requires permission → no start notification (broker handles it)
     assert len(starts) == 1
     assert starts[0].kind == "edit"
@@ -897,7 +900,9 @@ async def test_offline_session_modes():
 
     assert session.modes is not None
     assert session.modes.current_mode_id == "agent"
-    assert len(session.modes.available_modes) == 2
+    assert len(session.modes.available_modes) == 5
+    mode_ids = {m.id for m in session.modes.available_modes}
+    assert mode_ids == {"agent", "accept_edits", "plan", "dont_ask", "bypass"}
 
     await sut.set_session_mode(mode_id="plan", session_id=sid)
 
@@ -914,6 +919,138 @@ async def test_offline_session_modes():
         session_id=sid,
     )
     assert reply.stop_reason == "end_turn"
+
+
+async def _make_hook_sut():
+    """Create a ready-to-use (sut, sid, pre_hook) tuple for mode tests."""
+    import hellp
+
+    sut = hellp.EchoAgent(
+        agent_t=lambda cfg: FakeAgent(config=None, responses=[]),
+        agent_config_t=FakeConfig,
+    )
+    await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
+    client = AsyncMock(spec=Client)
+    client.request_permission.return_value = MagicMock(
+        outcome=MagicMock(option_id="approve")
+    )
+    sut.on_connect(conn=client)
+    session = await sut.new_session(cwd=".")
+    sid = session.session_id
+    pre_hook = hellp.MyPreToolCallDecideHook(sut)
+    return sut, sid, pre_hook, client
+
+
+async def _run_hook(pre_hook, tool_name, args=None):
+    """Run the pre-tool-call hook and return the HookResult."""
+    from google.antigravity.hooks.hooks import (
+        OperationContext,
+        SessionContext,
+        TurnContext,
+    )
+
+    op_ctx = OperationContext(TurnContext(SessionContext()))
+    tc = agy_types.ToolCall(id=f"tc-{tool_name}", name=tool_name, args=args or {})
+    return await pre_hook.run(op_ctx, tc)
+
+
+async def test_mode_agent_prompts_for_file_writes():
+    """In agent mode, create_file and edit_file trigger permission prompt."""
+    import hellp
+
+    sut, sid, hook, client = await _make_hook_sut()
+    token = hellp.current_session_id.set(sid)
+    try:
+        for tool in ("create_file", "edit_file"):
+            result = await _run_hook(hook, tool, {"path": "/tmp/x"})
+            assert result.allow is True, f"{tool} should be allowed after approval"
+        assert client.request_permission.call_count == 2
+    finally:
+        hellp.current_session_id.reset(token)
+
+
+async def test_mode_accept_edits_allows_file_writes():
+    """In accept_edits mode, file writes auto-allow without prompting."""
+    import hellp
+
+    sut, sid, hook, client = await _make_hook_sut()
+    sut._sessions[sid].mode = "accept_edits"
+    token = hellp.current_session_id.set(sid)
+    try:
+        for tool in ("create_file", "edit_file"):
+            result = await _run_hook(hook, tool, {"path": "/tmp/x"})
+            assert result.allow is True, f"{tool} should auto-allow in accept_edits"
+        client.request_permission.assert_not_called()
+    finally:
+        hellp.current_session_id.reset(token)
+
+
+async def test_mode_plan_denies_file_writes():
+    """In plan mode, file write tools are denied."""
+    import hellp
+
+    sut, sid, hook, _ = await _make_hook_sut()
+    sut._sessions[sid].mode = "plan"
+    token = hellp.current_session_id.set(sid)
+    try:
+        for tool in ("create_file", "edit_file"):
+            result = await _run_hook(hook, tool, {"path": "/tmp/x"})
+            assert result.allow is False, f"{tool} should be denied in plan mode"
+    finally:
+        hellp.current_session_id.reset(token)
+
+
+async def test_mode_plan_allows_reads_and_prompts_commands():
+    """In plan mode, read tools auto-allow and run_command prompts via broker."""
+    import hellp
+
+    sut, sid, hook, client = await _make_hook_sut()
+    sut._sessions[sid].mode = "plan"
+    token = hellp.current_session_id.set(sid)
+    try:
+        result = await _run_hook(hook, "view_file", {"path": "/tmp/x"})
+        assert result.allow is True, "view_file should auto-allow in plan mode"
+        result = await _run_hook(hook, "list_directory", {"directory": "/tmp"})
+        assert result.allow is True, "list_directory should auto-allow in plan mode"
+        result = await _run_hook(hook, "run_command", {"command": "ls"})
+        assert result.allow is True, "run_command should prompt and allow in plan mode"
+        assert client.request_permission.call_count == 1
+    finally:
+        hellp.current_session_id.reset(token)
+
+
+async def test_mode_dont_ask_denies_non_safe():
+    """In dont_ask mode, non-safe tools are denied without prompting."""
+    import hellp
+
+    sut, sid, hook, client = await _make_hook_sut()
+    sut._sessions[sid].mode = "dont_ask"
+    token = hellp.current_session_id.set(sid)
+    try:
+        result = await _run_hook(hook, "view_file", {"path": "/tmp/x"})
+        assert result.allow is True, "view_file should auto-allow"
+        for tool in ("create_file", "edit_file", "run_command"):
+            result = await _run_hook(hook, tool)
+            assert result.allow is False, f"{tool} should be denied in dont_ask"
+        client.request_permission.assert_not_called()
+    finally:
+        hellp.current_session_id.reset(token)
+
+
+async def test_mode_bypass_allows_everything():
+    """In bypass mode, all tools auto-allow without prompting."""
+    import hellp
+
+    sut, sid, hook, client = await _make_hook_sut()
+    sut._sessions[sid].mode = "bypass"
+    token = hellp.current_session_id.set(sid)
+    try:
+        for tool in ("create_file", "edit_file", "run_command", "view_file"):
+            result = await _run_hook(hook, tool)
+            assert result.allow is True, f"{tool} should auto-allow in bypass"
+        client.request_permission.assert_not_called()
+    finally:
+        hellp.current_session_id.reset(token)
 
 
 async def test_offline_config_option_model():

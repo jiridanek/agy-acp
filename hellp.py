@@ -149,12 +149,9 @@ _DEFAULT_CONTEXT = "normal"
 
 from google.antigravity.types import BuiltinTools
 
-# All SDK built-in tools except RUN_COMMAND auto-allow.
-# RUN_COMMAND and MCP server tools (mcp_* prefix) require IDE permission.
-_AUTO_ALLOW_TOOLS = {
+# Read-only and always-safe tools — auto-allowed in every mode.
+_ALWAYS_SAFE_TOOLS = {
     BuiltinTools.VIEW_FILE.value,
-    BuiltinTools.CREATE_FILE.value,
-    BuiltinTools.EDIT_FILE.value,
     BuiltinTools.LIST_DIR.value,
     BuiltinTools.FIND_FILE.value,
     BuiltinTools.SEARCH_DIR.value,
@@ -163,6 +160,25 @@ _AUTO_ALLOW_TOOLS = {
     BuiltinTools.START_SUBAGENT.value,
     BuiltinTools.GENERATE_IMAGE.value,
 }
+
+# File write tools — prompted in agent mode, auto-allowed in accept_edits/bypass,
+# denied in plan/dont_ask.
+_FILE_WRITE_TOOLS = {
+    BuiltinTools.CREATE_FILE.value,
+    BuiltinTools.EDIT_FILE.value,
+}
+
+_AVAILABLE_MODES = [
+    SessionMode(id="agent", name="Agent", description="Standard behavior, prompts for dangerous operations"),
+    SessionMode(id="accept_edits", name="Accept Edits", description="Auto-accept file edit operations"),
+    SessionMode(id="plan", name="Plan", description="Planning mode, file writes disabled"),
+    SessionMode(id="dont_ask", name="Don't Ask", description="Don't prompt for permissions, deny if not pre-approved"),
+    SessionMode(id="bypass", name="Bypass Permissions", description="Bypass all permission checks"),
+]
+
+
+def _build_mode_state(mode_id: str) -> SessionModeState:
+    return SessionModeState(current_mode_id=mode_id, available_modes=_AVAILABLE_MODES)
 
 
 def _get_token_rates(
@@ -485,16 +501,43 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
         title = _tool_title(str(data.name), data.args)
 
         context.set("acp_tc_id", tool_call_id)
-        log.debug("Intercepted tool call %s in session %s", data.name, session_id)
+        mode = self.echo_agent._sessions[session_id].mode
+        tool_name = str(data.name)
+        log.debug("Intercepted tool call %s in session %s (mode=%s)", data.name, session_id, mode)
 
-        if str(data.name) in _AUTO_ALLOW_TOOLS:
+        if tool_name in _ALWAYS_SAFE_TOOLS:
             await self._send_start(
                 session_id, tool_call_id, title, kind, locations, data.args
             )
             return HookResult(allow=True)
 
-        # Permission required — show the approval dialog first, don't send
-        # the progress card yet (avoids duplicate cards in the IDE)
+        is_file_write = tool_name in _FILE_WRITE_TOOLS
+
+        if mode == "bypass":
+            await self._send_start(
+                session_id, tool_call_id, title, kind, locations, data.args
+            )
+            return HookResult(allow=True)
+
+        if mode == "plan" and is_file_write:
+            return HookResult(
+                allow=False,
+                message="Plan mode is active — file writes are disabled. Describe what you would do instead.",
+            )
+
+        if mode == "dont_ask":
+            return HookResult(
+                allow=False,
+                message="This tool requires permission but the current mode denies unapproved tools. Suggest the user switch to Agent or Bypass mode.",
+            )
+
+        if mode == "accept_edits" and is_file_write:
+            await self._send_start(
+                session_id, tool_call_id, title, kind, locations, data.args
+            )
+            return HookResult(allow=True)
+
+        # agent mode (default), or accept_edits/plan for dangerous tools: prompt via broker
         async def requester(
             request: RequestPermissionRequest,
         ) -> RequestPermissionResponse:
@@ -711,16 +754,8 @@ class EchoAgent(Agent):
                 category="mode",
                 current_value=current_mode,
                 options=[
-                    SessionConfigSelectOption(
-                        value="agent",
-                        name="Agent",
-                        description="Execute tools autonomously",
-                    ),
-                    SessionConfigSelectOption(
-                        value="plan",
-                        name="Plan",
-                        description="Produce a plan without executing tools",
-                    ),
+                    SessionConfigSelectOption(value=m.id, name=m.name, description=m.description)
+                    for m in _AVAILABLE_MODES
                 ],
             ),
             SessionConfigOptionSelect(
@@ -947,24 +982,9 @@ class EchoAgent(Agent):
 
         asyncio.ensure_future(self._send_available_commands(new_id))
 
-        s = self._sessions[new_id]
         return ForkSessionResponse(
             session_id=new_id,
-            modes=SessionModeState(
-                current_mode_id=s.mode,
-                available_modes=[
-                    SessionMode(
-                        id="agent",
-                        name="Agent",
-                        description="Execute tools autonomously",
-                    ),
-                    SessionMode(
-                        id="plan",
-                        name="Plan",
-                        description="Produce a plan without executing tools",
-                    ),
-                ],
-            ),
+            modes=_build_mode_state(self._sessions[new_id].mode),
             models=self._build_model_state(new_id),
             config_options=self._build_config_options(new_id),
         )
@@ -997,21 +1017,7 @@ class EchoAgent(Agent):
         asyncio.ensure_future(self._send_available_commands(session_id))
 
         return ResumeSessionResponse(
-            modes=SessionModeState(
-                current_mode_id=stored.mode,
-                available_modes=[
-                    SessionMode(
-                        id="agent",
-                        name="Agent",
-                        description="Execute tools autonomously",
-                    ),
-                    SessionMode(
-                        id="plan",
-                        name="Plan",
-                        description="Produce a plan without executing tools",
-                    ),
-                ],
-            ),
+            modes=_build_mode_state(stored.mode),
             models=self._build_model_state(session_id),
             config_options=self._build_config_options(session_id),
         )
@@ -1063,21 +1069,7 @@ class EchoAgent(Agent):
         asyncio.ensure_future(self._send_available_commands(session_id))
 
         return LoadSessionResponse(
-            modes=SessionModeState(
-                current_mode_id=stored.mode,
-                available_modes=[
-                    SessionMode(
-                        id="agent",
-                        name="Agent",
-                        description="Execute tools autonomously",
-                    ),
-                    SessionMode(
-                        id="plan",
-                        name="Plan",
-                        description="Produce a plan without executing tools",
-                    ),
-                ],
-            ),
+            modes=_build_mode_state(stored.mode),
             models=self._build_model_state(session_id),
             config_options=self._build_config_options(session_id),
         )
@@ -1311,21 +1303,7 @@ class EchoAgent(Agent):
 
         return NewSessionResponse(
             session_id=session_id,
-            modes=SessionModeState(
-                current_mode_id="agent",
-                available_modes=[
-                    SessionMode(
-                        id="agent",
-                        name="Agent",
-                        description="Execute tools autonomously",
-                    ),
-                    SessionMode(
-                        id="plan",
-                        name="Plan",
-                        description="Produce a plan without executing tools",
-                    ),
-                ],
-            ),
+            modes=_build_mode_state("agent"),
             models=self._build_model_state(session_id),
             config_options=self._build_config_options(session_id),
         )

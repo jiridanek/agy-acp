@@ -78,17 +78,18 @@ IDE (IntelliJ) <--ACP JSON-RPC--> EchoAgent <---> Antigravity SDK <---> Gemini A
 
 - **File I/O** is routed through IDE RPCs (`read_text_file`, `write_text_file`) when the client supports it, otherwise falls back to the SDK's built-in tools.
 - **Command execution** goes through the IDE terminal when `client_capabilities.terminal=True`, otherwise the SDK's native `run_command` handles it.
-- **Permission gating** uses a whitelist: all SDK built-in tools auto-allow except `run_command`. MCP server tools and unknown tools require IDE permission approval.
+- **Permission gating** is mode-dependent: read-only tools always auto-allow; file writes and command execution behavior depends on the active mode (see below).
 
 ## Features
 
 - **Models**: Gemini 3.5 Flash (default), 3.1 Pro, 2.5 Pro/Flash/Flash-Lite, and more
 - **Thinking** (`thinking_level`): Minimal/Low/Medium/High (3.x models only)
-- **Modes**: Agent (autonomous) and Plan (no tool execution)
+- **Modes**: Agent (default, prompts for writes/commands), Accept Edits (auto-allows file edits), Plan (read-only, no file writes), Don't Ask (deny non-safe silently), Bypass (allow everything)
 - **Sessions**: Create, list, load, fork, resume with conversation persistence
 - **MCP servers**: HTTP, SSE, and stdio transports (with env variable workaround)
 - **Cost tracking**: Per-turn and cumulative USD estimates with long-context surcharge
-- **Slash commands**: `/reset`, `/clear`, `/cost`, `/usage`, `/model [id]`, `/thinking [level]`, `/compact`, `/help`
+- **Context retention**: Compact (25k), Normal (50k), Extended (200k), Max (1M) token thresholds
+- **Slash commands**: `/reset`, `/clear`, `/cost`, `/usage`, `/model [id]`, `/thinking [level]`, `/context [level]`, `/compact`, `/help`
 - **Authentication**: `GEMINI_API_KEY` env var via ACP auth flow
 
 ## Files
