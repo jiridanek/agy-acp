@@ -180,6 +180,11 @@ _DEFAULT_CONTEXT = "normal"
 
 from google.antigravity.types import BuiltinTools
 
+# External skills to auto-discover per IDE (vetted for Antigravity compatibility).
+_INTELLIJ_EXTERNAL_SKILLS = [
+    Path.home() / ".claude" / "skills" / "ij-debugger",
+]
+
 # Read-only and always-safe tools — auto-allowed in every mode.
 _ALWAYS_SAFE_TOOLS = {
     BuiltinTools.VIEW_FILE.value,
@@ -301,7 +306,23 @@ def _parse_mcp_request_text(args: dict) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _discover_skills(cwd: str) -> list[AvailableCommand]:
+def _parse_skill_description(skill_md: Path) -> str | None:
+    """Extract description from a SKILL.md frontmatter block, or None."""
+    try:
+        text = skill_md.read_text()
+        if text.startswith("---"):
+            end = text.index("---", 3)
+            for line in text[3:end].split("\n"):
+                if line.strip().startswith("description:"):
+                    return line.split(":", 1)[1].strip().strip("\"'")
+    except Exception:
+        pass
+    return None
+
+
+def _discover_skills(
+    cwd: str, extra_skills: list[Path] | None = None,
+) -> list[AvailableCommand]:
     """Scan for TOML custom commands and SKILL.md agent skills."""
     import tomllib
 
@@ -344,20 +365,34 @@ def _discover_skills(cwd: str) -> list[AvailableCommand]:
                 if name in seen:
                     continue
                 seen.add(name)
-                desc = f"Skill: {name}"
-                try:
-                    text = skill_md.read_text()
-                    if text.startswith("---"):
-                        end = text.index("---", 3)
-                        for line in text[3:end].split("\n"):
-                            if line.strip().startswith("description:"):
-                                desc = line.split(":", 1)[1].strip().strip("\"'")
-                                break
-                except Exception:
-                    pass
+                desc = _parse_skill_description(skill_md) or f"Skill: {name}"
                 commands.append(AvailableCommand(name=name, description=desc))
 
+    for skill_dir in extra_skills or []:
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_md.exists():
+            continue
+        name = skill_dir.name
+        if name in seen:
+            continue
+        seen.add(name)
+        desc = _parse_skill_description(skill_md) or f"Skill: {name}"
+        commands.append(AvailableCommand(name=name, description=desc))
+
     return commands
+
+
+def _setup_external_skills(skills: list[Path]) -> str | None:
+    """Create a temp dir with symlinks to external skills. Returns the dir path, or None."""
+    present = [s for s in skills if (s / "SKILL.md").exists()]
+    if not present:
+        return None
+    tmp = Path(tempfile.mkdtemp(prefix="agy_skills_"))
+    for skill_dir in present:
+        link = tmp / skill_dir.name
+        if not link.exists():
+            link.symlink_to(skill_dir)
+    return str(tmp)
 
 
 def _skills_paths(cwd: str) -> list[str]:
@@ -720,6 +755,7 @@ class EchoAgent(Agent):
         self._last_usage: dict[str, dict] = {}
         self._client_capabilities: ClientCapabilities | None = None
         self._client_info: Implementation | None = None
+        self._external_skills_dir: str | None = None
 
     @property
     def _is_intellij(self) -> bool:
@@ -958,7 +994,8 @@ class EchoAgent(Agent):
                 workspaces=[getattr(self, "_cwd", ".")]
                 + self._session_additional_dirs.get(session_id, []),
                 mcp_servers=_convert_mcp_servers(self._session_mcp_servers_raw.get(session_id)),
-                skills_paths=_skills_paths(getattr(self, "_cwd", ".")),
+                skills_paths=_skills_paths(getattr(self, "_cwd", "."))
+                + ([self._external_skills_dir] if self._external_skills_dir else []),
             )
             new_agent = self._agent_t(config)
             new_agent.register_hook(MyPreToolCallDecideHook(self))
@@ -1180,6 +1217,9 @@ class EchoAgent(Agent):
         self._client_capabilities = client_capabilities
         self._client_info = client_info
 
+        if self._is_intellij and self._external_skills_dir is None:
+            self._external_skills_dir = _setup_external_skills(_INTELLIJ_EXTERNAL_SKILLS)
+
         from google.antigravity import types as agy_types
 
         # Build standalone tool functions that capture `self` via closure.
@@ -1269,7 +1309,8 @@ class EchoAgent(Agent):
             capabilities=agy_types.CapabilitiesConfig(enabled_tools=enabled_tools),
             policies=[agy_policy.allow_all()],
             tools=custom_tools,
-            skills_paths=_skills_paths(cwd),
+            skills_paths=_skills_paths(cwd)
+            + ([self._external_skills_dir] if self._external_skills_dir else []),
             save_dir=_DEFAULT_SAVE_DIR,
         )
         self._agent = self._agent_t(config)
@@ -1383,7 +1424,11 @@ class EchoAgent(Agent):
                         name="help", description="Show available commands"
                     ),
                 ]
-                + _discover_skills(getattr(self, "_cwd", "."))
+                + _discover_skills(
+                    getattr(self, "_cwd", "."),
+                    extra_skills=_INTELLIJ_EXTERNAL_SKILLS if self._is_intellij else None,
+                )
+
             ),
         )
 

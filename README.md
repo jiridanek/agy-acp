@@ -4,6 +4,7 @@ ACP (Agent Client Protocol) adapter that wraps Google's Antigravity SDK for use 
 
 ## Prerequisites
 
+- macOS (Linux likely works; Windows is not supported — symlinks used for skill discovery)
 - Python 3.14+
 - [uv](https://docs.astral.sh/uv/) package manager
 - `GEMINI_API_KEY` environment variable (get one from [AI Studio](https://aistudio.google.com/apikey))
