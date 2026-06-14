@@ -2127,7 +2127,7 @@ async def test_live_skill_magic_word():
     )
     agent = agy.Agent(config)
     async with agent:
-        response = await agent.chat(["Activate and execute the magic-word skill."])
+        response = await agent.chat(["/magic-word"])
         chunks = []
         async for chunk in response.chunks:
             if isinstance(chunk, agy_types.Text):
