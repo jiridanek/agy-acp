@@ -10,6 +10,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "fastmcp>=3.4.2",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
 ]

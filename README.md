@@ -171,6 +171,33 @@ The agent supports 5 permission modes that control how tool calls are handled:
 
 Switch modes via the Mode dropdown in the IDE, or via `set_session_mode` / `set_config_option` RPCs.
 
+## Subagents
+
+The agent supports subagents via the Antigravity SDK's `START_SUBAGENT` builtin tool (enabled with `enable_subagents=True` in `CapabilitiesConfig`).
+
+### Built-in subagent types
+
+| Type | Purpose |
+|------|---------|
+| `research` | Read-only codebase exploration, preserves parent's context window |
+| `self` | Clone of the calling agent with identical tools and system prompt |
+
+Custom subagent types can be defined at runtime via `define_subagent` with a custom `system_prompt` and permission flags:
+
+- `enable_write_tools` — file create/edit and command execution
+- `enable_mcp_tools` — access to parent's MCP servers (e.g. IDE tools)
+- `enable_subagent_tools` — ability to spawn nested subagents
+
+### Known limitations
+
+- **MCP tool isolation is broken** — `enable_mcp_tools: false` does not restrict access; subagents always inherit the parent's MCP connections regardless of the flag ([SDK issue #65](https://github.com/google-antigravity/antigravity-sdk-python/issues/65))
+- **No per-subagent permission modes** — the parent's permission mode applies globally; you can't give a subagent a more restrictive mode
+- **No conversation inheritance** — subagents start with a clean context window (by design, to preserve the parent's context)
+
+### Hooks
+
+Subagent lifecycle is visible through the standard `PreToolCallDecideHook` and `PostToolCallHook` — the tool name is `start_subagent`. See the SDK example at [`examples/getting_started/subagents.py`](https://github.com/google-antigravity/antigravity-sdk-python/blob/main/examples/getting_started/subagents.py).
+
 ## IntelliJ-specific behavior
 
 The agent detects IntelliJ via `client_info.name` containing "JetBrains" and adjusts:
