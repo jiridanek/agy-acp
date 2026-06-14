@@ -554,13 +554,13 @@ async def test_offline_close_session_cleans_state():
 
     sut._last_file_edits[(sid, "/tmp/x")] = {"old_text": "a", "new_text": "b"}
     sut._last_terminal_ids[sid] = "term-1"
-    sut._session_titles[sid] = "test"
+    sut._sessions[sid].title = "test"
 
     await sut.close_session(session_id=sid)
 
     assert (sid, "/tmp/x") not in sut._last_file_edits
     assert sid not in sut._last_terminal_ids
-    assert sid not in sut._session_titles
+    assert sid not in sut._sessions
 
 
 async def test_offline_empty_prompt_returns_early():
@@ -937,7 +937,7 @@ async def test_offline_config_option_model():
     resp = await sut.set_config_option(
         config_id="model", session_id=sid, value="gemini-2.5-flash"
     )
-    assert sut._session_models[sid] == "gemini-2.5-flash"
+    assert sut._sessions[sid].model == "gemini-2.5-flash"
 
     model_opt = next(o for o in resp.config_options if o.id == "model")
     assert model_opt.current_value == "gemini-2.5-flash"
@@ -946,7 +946,7 @@ async def test_offline_config_option_model():
     resp2 = await sut.set_config_option(
         config_id="thinking_level", session_id=sid, value="high"
     )
-    assert sut._session_thinking_levels[sid] == "high"
+    assert sut._sessions[sid].thinking_level == "high"
 
     thinking_opt = next(o for o in resp2.config_options if o.id == "thinking_level")
     assert thinking_opt.current_value == "high"
@@ -1021,7 +1021,7 @@ async def test_offline_load_session(tmp_path):
     loaded = await sut.load_session(session_id=sid, cwd="/tmp/proj")
     assert loaded is not None
     assert loaded.modes.current_mode_id == "plan"
-    assert sut._session_modes[sid] == "plan"
+    assert sut._sessions[sid].mode == "plan"
 
 
 async def test_offline_usage_tracking():
@@ -1157,7 +1157,7 @@ async def test_offline_cost_pro_long_context_surcharge():
 
     session = await sut.new_session(cwd=".")
     sid = session.session_id
-    sut._session_models[sid] = "gemini-2.5-pro"
+    sut._sessions[sid].model = "gemini-2.5-pro"
 
     await sut.prompt([TextContentBlock(type="text", text="test")], session_id=sid)
 
@@ -1219,7 +1219,7 @@ async def test_offline_cost_unknown_model():
 
     session = await sut.new_session(cwd=".")
     sid = session.session_id
-    sut._session_models[sid] = "unknown-model-xyz"
+    sut._sessions[sid].model = "unknown-model-xyz"
 
     await sut.prompt(
         [TextContentBlock(type="text", text="test")],
@@ -1341,7 +1341,7 @@ async def test_offline_model_switching():
 
     resp = await sut.set_session_model(model_id="gemini-2.5-flash", session_id=sid)
     assert resp is not None
-    assert sut._session_models[sid] == "gemini-2.5-flash"
+    assert sut._sessions[sid].model == "gemini-2.5-flash"
     assert len(configs_seen) == 1
     gemini_cfg = configs_seen[0]["gemini_config"]
     assert gemini_cfg.models.default.name == "gemini-2.5-flash"
@@ -1486,7 +1486,7 @@ async def test_offline_model_persisted_in_session(tmp_path):
     await sut.prompt([TextContentBlock(type="text", text="hi")], session_id=sid)
 
     stored = store.load(sid)
-    assert stored["model"] == "gemini-2.5-flash-lite"
+    assert stored.model == "gemini-2.5-flash-lite"
 
     # Load into fresh agent
     sut2 = hellp.EchoAgent(
@@ -1513,11 +1513,11 @@ async def test_offline_close_session_cleans_model():
 
     session = await sut.new_session(cwd=".")
     sid = session.session_id
-    assert sid in sut._session_models
+    assert sid in sut._sessions
     sut._active_tasks[sid] = asyncio.current_task()
 
     await sut.close_session(session_id=sid)
-    assert sid not in sut._session_models
+    assert sid not in sut._sessions
     assert sid not in sut._active_tasks
 
 
@@ -1539,7 +1539,7 @@ async def test_offline_reset_command():
 
     # First prompt sets title
     await sut.prompt([TextContentBlock(type="text", text="hello")], session_id=sid)
-    assert sid in sut._session_titles
+    assert sut._sessions[sid].title is not None
 
     # /reset clears title and rebuilds agent
     client.reset_mock()
@@ -1547,7 +1547,7 @@ async def test_offline_reset_command():
         [TextContentBlock(type="text", text="/reset")], session_id=sid
     )
     assert reply.stop_reason == "end_turn"
-    assert sid not in sut._session_titles
+    assert sut._sessions[sid].title is None
 
     updates = [
         call.kwargs.get("update") or call.args[1]
@@ -1573,7 +1573,7 @@ async def test_offline_fork_session(tmp_path):
 
     session = await sut.new_session(cwd="/project")
     sid = session.session_id
-    sut._session_titles[sid] = "My Session"
+    sut._sessions[sid].title = "My Session"
     await sut.set_config_option(
         config_id="model", session_id=sid, value="gemini-2.5-pro"
     )
@@ -1585,17 +1585,17 @@ async def test_offline_fork_session(tmp_path):
     fid = forked.session_id
 
     assert fid != sid
-    assert sut._session_modes[fid] == "agent"
-    assert sut._session_models[fid] == "gemini-2.5-pro"
-    assert sut._session_thinking_levels[fid] == "high"
-    assert sut._session_titles[fid] == "My Session (fork)"
+    assert sut._sessions[fid].mode == "agent"
+    assert sut._sessions[fid].model == "gemini-2.5-pro"
+    assert sut._sessions[fid].thinking_level == "high"
+    assert sut._sessions[fid].title == "My Session (fork)"
     assert forked.models is not None
     assert forked.models.current_model_id == "gemini-2.5-pro"
 
     # Forked session is persisted
     stored = store.load(fid)
     assert stored is not None
-    assert stored["model"] == "gemini-2.5-pro"
+    assert stored.model == "gemini-2.5-pro"
 
 
 async def test_offline_fork_capability_declared():
@@ -1764,7 +1764,7 @@ async def test_offline_model_command_switch():
         [TextContentBlock(type="text", text="/model gemini-2.5-flash")], session_id=sid
     )
     assert reply.stop_reason == "end_turn"
-    assert sut._session_models[sid] == "gemini-2.5-flash"
+    assert sut._sessions[sid].model == "gemini-2.5-flash"
 
 
 async def test_offline_thinking_command():
@@ -1798,7 +1798,7 @@ async def test_offline_thinking_command():
     reply = await sut.prompt(
         [TextContentBlock(type="text", text="/thinking high")], session_id=sid
     )
-    assert sut._session_thinking_levels[sid] == "high"
+    assert sut._sessions[sid].thinking_level == "high"
 
 
 async def test_offline_context_command():
@@ -1831,7 +1831,7 @@ async def test_offline_context_command():
     reply = await sut.prompt(
         [TextContentBlock(type="text", text="/context max")], session_id=sid
     )
-    assert sut._session_context_levels[sid] == "max"
+    assert sut._sessions[sid].context_level == "max"
 
 
 async def test_offline_clear_is_reset_alias():
@@ -1848,13 +1848,13 @@ async def test_offline_clear_is_reset_alias():
 
     session = await sut.new_session(cwd=".")
     sid = session.session_id
-    sut._session_titles[sid] = "test"
+    sut._sessions[sid].title = "test"
 
     reply = await sut.prompt(
         [TextContentBlock(type="text", text="/clear")], session_id=sid
     )
     assert reply.stop_reason == "end_turn"
-    assert sid not in sut._session_titles
+    assert sut._sessions[sid].title is None
 
 
 async def test_offline_load_session_rebuilds_with_conversation_id(tmp_path):
@@ -1864,16 +1864,14 @@ async def test_offline_load_session_rebuilds_with_conversation_id(tmp_path):
     store = hellp.SessionStore(path=tmp_path / "sessions.json")
     store.save(
         "sess-1",
-        {
-            "session_id": "sess-1",
-            "conversation_id": "conv-xyz",
-            "cwd": "/project",
-            "mode": "agent",
-            "model": "gemini-3.1-flash-lite",
-            "thinking_level": "medium",
-            "title": "Test",
-            "updated_at": "2026-01-01T00:00:00Z",
-        },
+        hellp.SessionState(
+            session_id="sess-1",
+            conversation_id="conv-xyz",
+            cwd="/project",
+            model="gemini-3.1-flash-lite",
+            title="Test",
+            updated_at="2026-01-01T00:00:00Z",
+        ),
     )
 
     configs_seen = []
@@ -2062,7 +2060,7 @@ async def test_offline_resume_session(tmp_path):
     await sut.prompt([TextContentBlock(type="text", text="hi")], session_id=sid)
 
     stored = store.load(sid)
-    assert stored["conversation_id"] == "conv-abc-123"
+    assert stored.conversation_id == "conv-abc-123"
 
     # Resume in a fresh agent instance
     sut2 = hellp.EchoAgent(
@@ -2075,7 +2073,7 @@ async def test_offline_resume_session(tmp_path):
 
     assert resp.models.current_model_id == "gemini-2.5-pro"
     assert resp.modes.current_mode_id == "agent"
-    assert sut2._session_thinking_levels[sid] == "high"
+    assert sut2._sessions[sid].thinking_level == "high"
 
     # _rebuild_agent was called with conversation_id
     assert len(configs_seen) >= 1

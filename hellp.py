@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from pydantic import BaseModel
+
 import google.antigravity as agy
 from google.antigravity.hooks import policy as agy_policy
 from google.antigravity.hooks.hooks import (
@@ -175,6 +177,18 @@ def _get_token_rates(
     return (base_in, base_out)
 
 
+class SessionState(BaseModel):
+    session_id: str
+    conversation_id: str | None = None
+    cwd: str = "."
+    mode: str = "agent"
+    model: str = _DEFAULT_MODEL_ID
+    thinking_level: str = _DEFAULT_THINKING_LEVEL
+    context_level: str = _DEFAULT_CONTEXT
+    title: str | None = None
+    updated_at: str | None = None
+
+
 class SessionStore:
     def __init__(self, path: Path = _DEFAULT_STORE_PATH):
         self._path = path
@@ -188,21 +202,24 @@ class SessionStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(json.dumps(data, indent=2))
 
-    def save(self, session_id: str, info: dict) -> None:
+    def save(self, session_id: str, state: SessionState) -> None:
         data = self._read()
-        data[session_id] = info
+        data[session_id] = state.model_dump()
         self._write(data)
 
-    def list(self, cwd: str | None = None) -> list[dict]:
+    def list(self, cwd: str | None = None) -> list[SessionState]:
         data = self._read()
-        sessions = list(data.values())
+        sessions = [SessionState.model_validate(v) for v in data.values()]
         if cwd:
-            sessions = [s for s in sessions if s.get("cwd") == cwd]
-        sessions.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
+            sessions = [s for s in sessions if s.cwd == cwd]
+        sessions.sort(key=lambda s: s.updated_at or "", reverse=True)
         return sessions
 
-    def load(self, session_id: str) -> dict | None:
-        return self._read().get(session_id)
+    def load(self, session_id: str) -> SessionState | None:
+        raw = self._read().get(session_id)
+        if raw is None:
+            return None
+        return SessionState.model_validate(raw)
 
     def delete(self, session_id: str) -> None:
         data = self._read()
@@ -618,12 +635,8 @@ class EchoAgent(Agent):
         self._store = store or SessionStore()
         self._tracker = ToolCallTracker()
         self._active_tasks: dict[str, asyncio.Task] = {}
-        self._session_titles: dict[str, str] = {}
-        self._session_modes: dict[str, str] = {}
+        self._sessions: dict[str, SessionState] = {}
         self._active_session_id: str | None = None
-        self._session_models: dict[str, str] = {}
-        self._session_thinking_levels: dict[str, str] = {}
-        self._session_context_levels: dict[str, str] = {}
         self._session_additional_dirs: dict[str, list[str]] = {}
         self._session_mcp_servers: dict[str, list] = {}
         self._session_cumulative_cost: dict[str, float] = {}
@@ -656,11 +669,7 @@ class EchoAgent(Agent):
         self, session_id: str, **kwargs: Any
     ) -> CloseSessionResponse:
         await self._agent.__aexit__(None, None, None)
-        self._session_titles.pop(session_id, None)
-        self._session_modes.pop(session_id, None)
-        self._session_models.pop(session_id, None)
-        self._session_thinking_levels.pop(session_id, None)
-        self._session_context_levels.pop(session_id, None)
+        self._sessions.pop(session_id, None)
         self._session_additional_dirs.pop(session_id, None)
         self._session_mcp_servers.pop(session_id, None)
         self._session_cumulative_cost.pop(session_id, None)
@@ -677,7 +686,7 @@ class EchoAgent(Agent):
         self, mode_id: str, session_id: str, **kwargs: Any
     ) -> SetSessionModeResponse:
         log.debug("set_session_mode mode=%s session=%s", mode_id, session_id)
-        self._session_modes[session_id] = mode_id
+        self._sessions[session_id].mode = mode_id
         await self._conn.session_update(
             session_id=session_id,
             update=CurrentModeUpdate(
@@ -688,12 +697,11 @@ class EchoAgent(Agent):
         return SetSessionModeResponse()
 
     def _build_config_options(self, session_id: str) -> list[SessionConfigOptionSelect]:
-        current_mode = self._session_modes.get(session_id, "agent")
-        current_model = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
-        current_thinking = self._session_thinking_levels.get(
-            session_id, _DEFAULT_THINKING_LEVEL
-        )
-        current_context = self._session_context_levels.get(session_id, _DEFAULT_CONTEXT)
+        s = self._sessions[session_id]
+        current_mode = s.mode
+        current_model = s.model
+        current_thinking = s.thinking_level
+        current_context = s.context_level
         return [
             SessionConfigOptionSelect(
                 id="mode",
@@ -771,8 +779,9 @@ class EchoAgent(Agent):
             value,
             session_id,
         )
+        s = self._sessions[session_id]
         if config_id == "mode" and isinstance(value, str):
-            self._session_modes[session_id] = value
+            s.mode = value
             await self._conn.session_update(
                 session_id=session_id,
                 update=CurrentModeUpdate(
@@ -781,19 +790,19 @@ class EchoAgent(Agent):
                 ),
             )
         elif config_id == "model" and isinstance(value, str):
-            self._session_models[session_id] = value
+            s.model = value
             await self._rebuild_agent(
                 session_id,
                 conversation_id=getattr(self._agent, "conversation_id", None),
             )
         elif config_id == "thinking_level" and isinstance(value, str):
-            self._session_thinking_levels[session_id] = value
+            s.thinking_level = value
             await self._rebuild_agent(
                 session_id,
                 conversation_id=getattr(self._agent, "conversation_id", None),
             )
         elif config_id == "context" and isinstance(value, str):
-            self._session_context_levels[session_id] = value
+            s.context_level = value
             await self._rebuild_agent(
                 session_id,
                 conversation_id=getattr(self._agent, "conversation_id", None),
@@ -819,7 +828,7 @@ class EchoAgent(Agent):
         return AuthenticateResponse()
 
     def _build_model_state(self, session_id: str) -> SessionModelState:
-        current = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
+        current = self._sessions[session_id].model
         return SessionModelState(
             current_model_id=current,
             available_models=_AVAILABLE_MODELS,
@@ -832,11 +841,10 @@ class EchoAgent(Agent):
         save_dir: str | None = None,
     ) -> None:
         """Tear down and recreate the Antigravity agent with current model/thinking settings."""
-        model_id = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
-        thinking = self._session_thinking_levels.get(
-            session_id, _DEFAULT_THINKING_LEVEL
-        )
-        context_level = self._session_context_levels.get(session_id, _DEFAULT_CONTEXT)
+        s = self._sessions[session_id]
+        model_id = s.model
+        thinking = s.thinking_level
+        context_level = s.context_level
         compaction_threshold = _CONTEXT_PRESETS.get(context_level, 50_000)
 
         old_agent = self._agent
@@ -897,7 +905,7 @@ class EchoAgent(Agent):
         **kwargs: Any,
     ) -> SetSessionModelResponse | None:
         log.debug("set_session_model model=%s session=%s", model_id, session_id)
-        self._session_models[session_id] = model_id
+        self._sessions[session_id].model = model_id
         await self._rebuild_agent(
             session_id, conversation_id=getattr(self._agent, "conversation_id", None)
         )
@@ -913,17 +921,20 @@ class EchoAgent(Agent):
     ) -> ForkSessionResponse:
         log.debug("fork_session from %s", session_id)
         new_id = uuid4().hex
-        mode = self._session_modes.get(session_id, "agent")
-        model = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
-        thinking = self._session_thinking_levels.get(
-            session_id, _DEFAULT_THINKING_LEVEL
-        )
-        title = self._session_titles.get(session_id)
+        parent = self._sessions[session_id]
+        title = f"{parent.title} (fork)" if parent.title else None
 
         self._cwd = cwd
-        self._session_modes[new_id] = mode
-        self._session_models[new_id] = model
-        self._session_thinking_levels[new_id] = thinking
+        self._sessions[new_id] = SessionState(
+            session_id=new_id,
+            cwd=cwd,
+            mode=parent.mode,
+            model=parent.model,
+            thinking_level=parent.thinking_level,
+            context_level=parent.context_level,
+            title=title,
+            updated_at=datetime.now(timezone.utc).isoformat(),
+        )
         self._session_additional_dirs[new_id] = (
             additional_directories or self._session_additional_dirs.get(session_id, [])
         )
@@ -931,29 +942,16 @@ class EchoAgent(Agent):
             self._session_mcp_servers[new_id] = _convert_mcp_servers(mcp_servers) or []
         elif session_id in self._session_mcp_servers:
             self._session_mcp_servers[new_id] = self._session_mcp_servers[session_id]
-        if title:
-            self._session_titles[new_id] = f"{title} (fork)"
 
-        self._store.save(
-            new_id,
-            {
-                "session_id": new_id,
-                "conversation_id": None,
-                "cwd": cwd,
-                "mode": mode,
-                "model": model,
-                "thinking_level": thinking,
-                "title": self._session_titles.get(new_id),
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            },
-        )
+        self._store.save(new_id, self._sessions[new_id])
 
         asyncio.ensure_future(self._send_available_commands(new_id))
 
+        s = self._sessions[new_id]
         return ForkSessionResponse(
             session_id=new_id,
             modes=SessionModeState(
-                current_mode_id=mode,
+                current_mode_id=s.mode,
                 available_modes=[
                     SessionMode(
                         id="agent",
@@ -985,30 +983,22 @@ class EchoAgent(Agent):
             raise ValueError(f"Session not found: {session_id}")
 
         self._cwd = cwd
-        mode = stored.get("mode", "agent")
-        model = stored.get("model", _DEFAULT_MODEL_ID)
-        thinking = stored.get("thinking_level", _DEFAULT_THINKING_LEVEL)
-        conv_id = stored.get("conversation_id")
-
-        self._session_modes[session_id] = mode
-        self._session_models[session_id] = model
-        self._session_thinking_levels[session_id] = thinking
+        stored.cwd = cwd
+        self._sessions[session_id] = stored
         self._session_additional_dirs[session_id] = additional_directories or []
         converted = _convert_mcp_servers(mcp_servers)
         if converted:
             self._session_mcp_servers[session_id] = converted
-        if stored.get("title"):
-            self._session_titles[session_id] = stored["title"]
 
-        if conv_id:
-            log.debug("resuming conversation %s", conv_id)
-            await self._rebuild_agent(session_id, conversation_id=conv_id)
+        if stored.conversation_id:
+            log.debug("resuming conversation %s", stored.conversation_id)
+            await self._rebuild_agent(session_id, conversation_id=stored.conversation_id)
 
         asyncio.ensure_future(self._send_available_commands(session_id))
 
         return ResumeSessionResponse(
             modes=SessionModeState(
-                current_mode_id=mode,
+                current_mode_id=stored.mode,
                 available_modes=[
                     SessionMode(
                         id="agent",
@@ -1037,10 +1027,10 @@ class EchoAgent(Agent):
         return ListSessionsResponse(
             sessions=[
                 SessionInfo(
-                    session_id=s["session_id"],
-                    cwd=s["cwd"],
-                    title=s.get("title"),
-                    updated_at=s.get("updated_at"),
+                    session_id=s.session_id,
+                    cwd=s.cwd,
+                    title=s.title,
+                    updated_at=s.updated_at,
                 )
                 for s in sessions
             ],
@@ -1059,29 +1049,22 @@ class EchoAgent(Agent):
             return None
 
         self._cwd = cwd
-        mode = stored.get("mode", "agent")
-        model = stored.get("model", _DEFAULT_MODEL_ID)
-        thinking = stored.get("thinking_level", _DEFAULT_THINKING_LEVEL)
-        self._session_modes[session_id] = mode
-        self._session_models[session_id] = model
-        self._session_thinking_levels[session_id] = thinking
+        stored.cwd = cwd
+        self._sessions[session_id] = stored
         self._session_additional_dirs[session_id] = additional_directories or []
         converted = _convert_mcp_servers(mcp_servers)
         if converted:
             self._session_mcp_servers[session_id] = converted
-        if stored.get("title"):
-            self._session_titles[session_id] = stored.get("title", "")
 
-        conv_id = stored.get("conversation_id")
-        if conv_id:
-            log.debug("restoring conversation %s for session %s", conv_id, session_id)
-            await self._rebuild_agent(session_id, conversation_id=conv_id)
+        if stored.conversation_id:
+            log.debug("restoring conversation %s for session %s", stored.conversation_id, session_id)
+            await self._rebuild_agent(session_id, conversation_id=stored.conversation_id)
 
         asyncio.ensure_future(self._send_available_commands(session_id))
 
         return LoadSessionResponse(
             modes=SessionModeState(
-                current_mode_id=mode,
+                current_mode_id=stored.mode,
                 available_modes=[
                     SessionMode(
                         id="agent",
@@ -1316,10 +1299,10 @@ class EchoAgent(Agent):
         ):
             self._agent._config.workspaces = workspaces
 
-        self._session_modes[session_id] = "agent"
-        self._session_models[session_id] = _DEFAULT_MODEL_ID
-        self._session_thinking_levels[session_id] = _DEFAULT_THINKING_LEVEL
-        self._session_context_levels[session_id] = _DEFAULT_CONTEXT
+        self._sessions[session_id] = SessionState(
+            session_id=session_id,
+            cwd=cwd,
+        )
         self._session_additional_dirs[session_id] = additional_directories or []
         converted = _convert_mcp_servers(mcp_servers)
         if converted:
@@ -1393,7 +1376,7 @@ class EchoAgent(Agent):
 
         if name in ("reset", "clear"):
             await self._rebuild_agent(session_id)
-            self._session_titles.pop(session_id, None)
+            self._sessions[session_id].title = None
             return "Conversation reset."
 
         if name == "help":
@@ -1410,7 +1393,7 @@ class EchoAgent(Agent):
             )
 
         if name == "cost":
-            model = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
+            model = self._sessions[session_id].model
             cost = self._session_cumulative_cost.get(session_id, 0.0)
             return f"**Model:** {model}\n**Cumulative cost:** ${cost:.6f} USD"
 
@@ -1437,7 +1420,7 @@ class EchoAgent(Agent):
                     config_id="model", session_id=session_id, value=arg
                 )
                 return f"Switched to **{arg}**."
-            current = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
+            current = self._sessions[session_id].model
             models = "\n".join(
                 f"- {'**' if m.model_id == current else ''}`{m.model_id}`{'**' if m.model_id == current else ''} — {m.name}"
                 for m in _AVAILABLE_MODELS
@@ -1454,9 +1437,7 @@ class EchoAgent(Agent):
                     config_id="thinking_level", session_id=session_id, value=arg
                 )
                 return f"Thinking set to **{arg}**."
-            current = self._session_thinking_levels.get(
-                session_id, _DEFAULT_THINKING_LEVEL
-            )
+            current = self._sessions[session_id].thinking_level
             return f"Current: **{current}**\nAvailable: {', '.join(_THINKING_LEVELS)}"
 
         if name == "context":
@@ -1464,7 +1445,7 @@ class EchoAgent(Agent):
                 if arg not in _CONTEXT_PRESETS:
                     return f"Unknown level `{arg}`. Available: {', '.join(_CONTEXT_PRESETS)}"
                 if self._is_intellij:
-                    self._session_context_levels[session_id] = arg
+                    self._sessions[session_id].context_level = arg
                     await self._rebuild_agent(
                         session_id,
                         conversation_id=getattr(self._agent, "conversation_id", None),
@@ -1474,7 +1455,7 @@ class EchoAgent(Agent):
                         config_id="context", session_id=session_id, value=arg
                     )
                 return f"Context set to **{arg}** ({_CONTEXT_PRESETS[arg]:,} tokens)."
-            current = self._session_context_levels.get(session_id, _DEFAULT_CONTEXT)
+            current = self._sessions[session_id].context_level
             levels = ", ".join(
                 f"**{k}** ({v:,})" if k == current else f"{k} ({v:,})"
                 for k, v in _CONTEXT_PRESETS.items()
@@ -1562,16 +1543,16 @@ class EchoAgent(Agent):
             )
             return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
 
-        if self._session_modes.get(session_id) == "plan":
+        if self._sessions[session_id].mode == "plan":
             parts.append(
                 "\n[PLAN MODE: Produce a step-by-step plan. Do not execute any tools.]"
             )
 
-        if session_id not in self._session_titles:
+        if not self._sessions[session_id].title:
             first_text = next((p for p in parts if isinstance(p, str)), None)
             if first_text:
                 title = first_text[:80].split("\n")[0]
-                self._session_titles[session_id] = title
+                self._sessions[session_id].title = title
                 await self._conn.session_update(
                     session_id=session_id,
                     update=SessionInfoUpdate(
@@ -1661,7 +1642,7 @@ class EchoAgent(Agent):
                         "total_tokens": meta.total_token_count or 0,
                     }
                     used = meta.total_token_count or 0
-                    model_id = self._session_models.get(session_id, _DEFAULT_MODEL_ID)
+                    model_id = self._sessions[session_id].model
                     rates = _get_token_rates(model_id, meta.prompt_token_count or 0)
                     cost = None
                     if rates:
@@ -1688,21 +1669,11 @@ class EchoAgent(Agent):
         except Exception:
             log.debug("usage extraction failed", exc_info=True)
 
-        self._store.save(
-            session_id,
-            {
-                "session_id": session_id,
-                "conversation_id": getattr(self._agent, "conversation_id", None),
-                "cwd": getattr(self, "_cwd", "."),
-                "mode": self._session_modes.get(session_id, "agent"),
-                "model": self._session_models.get(session_id, _DEFAULT_MODEL_ID),
-                "thinking_level": self._session_thinking_levels.get(
-                    session_id, _DEFAULT_THINKING_LEVEL
-                ),
-                "title": self._session_titles.get(session_id),
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            },
-        )
+        s = self._sessions[session_id]
+        s.conversation_id = getattr(self._agent, "conversation_id", None)
+        s.cwd = getattr(self, "_cwd", ".")
+        s.updated_at = datetime.now(timezone.utc).isoformat()
+        self._store.save(session_id, s)
 
         log.debug("returning PromptResponse stop_reason=%s", stop_reason)
         return PromptResponse(
