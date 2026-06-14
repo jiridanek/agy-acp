@@ -2237,7 +2237,6 @@ async def test_offline_resume_session_not_found(tmp_path):
 # --- Live tests (require GEMINI_API_KEY) ---
 
 
-@pytest.mark.slow
 async def test_live_skill_magic_word():
     """E2E: /magic-word skill triggers agent to say 'vlak'."""
     from hellp import _skills_paths

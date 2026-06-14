@@ -27,6 +27,37 @@ log = logging.getLogger(__name__)
 log.addHandler(logging.FileHandler("file.log"))
 log.setLevel(logging.DEBUG)
 
+_TRACE = bool(os.environ.get("AGY_TRACE"))
+
+
+def _log_prompt_blocks(prompt: list) -> None:
+    log.debug("prompt blocks=%d", len(prompt))
+    if not _TRACE:
+        return
+    for i, block in enumerate(prompt):
+        btype = getattr(block, "type", type(block).__name__)
+        preview = ""
+        if hasattr(block, "text"):
+            preview = block.text[:200].replace("\n", "\\n")
+        elif hasattr(block, "resource"):
+            res = block.resource
+            content = getattr(res, "text", None) or getattr(res, "content", None)
+            content_len = len(content) if content else 0
+            preview = f"resource: {getattr(res, 'uri', '?')} ({content_len} chars)"
+        log.debug("  block[%d] type=%s: %s", i, btype, preview)
+        log.debug("    raw[%d]: %s", i, str(block)[:1000])
+
+
+def _log_mcp_servers(label: str, servers: list | None) -> None:
+    if not servers:
+        log.debug("%s: no mcp_servers", label)
+        return
+    log.debug("%s mcp_servers=%d", label, len(servers))
+    if not _TRACE:
+        return
+    for i, s in enumerate(servers):
+        log.debug("  mcp[%d]: %s", i, str(s)[:500])
+
 from acp import (
     Agent,
     InitializeResponse,
@@ -1296,6 +1327,7 @@ class EchoAgent(Agent):
             cwd=cwd,
         )
         self._session_additional_dirs[session_id] = additional_directories or []
+        _log_mcp_servers("new_session", mcp_servers)
         converted = _convert_mcp_servers(mcp_servers)
         if converted:
             self._session_mcp_servers[session_id] = converted
@@ -1458,7 +1490,8 @@ class EchoAgent(Agent):
         message_id: str | None = None,
         **kwargs: Any,
     ) -> PromptResponse:
-        log.debug("prompt called, blocks=%d, session_id=%s", len(prompt), session_id)
+        log.debug("prompt session=%s", session_id)
+        _log_prompt_blocks(prompt)
 
         parts: list[agy.types.ContentPrimitive] = []
         for block in prompt:
