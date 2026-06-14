@@ -1318,7 +1318,11 @@ class EchoAgent(Agent):
         self._agent.register_hook(MyPreToolCallDecideHook(self))
         self._agent.register_hook(MyPostToolCallHook(self))
 
-        await self._agent.__aenter__()
+        try:
+            await self._agent.__aenter__()
+        except Exception:
+            log.exception("harness startup failed")
+            raise
 
         log.debug("initialized")
 
@@ -1678,11 +1682,14 @@ class EchoAgent(Agent):
                     log.debug("failed to release terminal %s on cancel", terminal_id)
             stop_reason = "cancelled"
         except Exception as e:
-            log.exception("error during agent chat")
-            await self._conn.session_update(
-                session_id=session_id,
-                update=update_agent_message(text_block(f"Error: {e}")),
-            )
+            log.exception("error during agent chat: %s", e)
+            try:
+                await self._conn.session_update(
+                    session_id=session_id,
+                    update=update_agent_message(text_block(f"Error: {e}")),
+                )
+            except Exception:
+                log.debug("failed to send error update to client")
         finally:
             current_session_id.reset(token)
             self._active_session_id = None
