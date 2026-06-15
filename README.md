@@ -123,6 +123,20 @@ This gives the agent individual tools with full schemas. Key tools ([full list](
 
 Toggle individual tools on/off in **Settings > Tools > MCP Server > Exposed Tools**.
 
+Notable gaps in the built-in MCP server (as of 2026.1):
+
+- **No `find_usages`** — semantic "find all references" (Alt+F7) is not exposed. Agents fall back to `search_text`/`search_regex` (grep), which misses scope, overrides, and type hierarchy. Tracked in [IJPL-199607](https://youtrack.jetbrains.com/issue/IJPL-199607).
+- **No advanced refactoring** — only `rename_refactoring` exists. Extract method/variable/file are missing, so agents do multi-file refactors manually (slow, context-heavy). Tracked in [IJPL-216136](https://youtrack.jetbrains.com/issue/IJPL-216136).
+
+Third-party plugins that fill these gaps ([discussion](https://www.reddit.com/r/Jetbrains/comments/1t48pap/is_intellijs_mcp_server_just_completely_useless/)):
+
+| Plugin | Find usages | Refactoring | License |
+|--------|-------------|-------------|---------|
+| [IDE Index MCP Server](https://plugins.jetbrains.com/plugin/29174-ide-index-mcp-server) ([source](https://github.com/hechtcarmel/jetbrains-index-mcp-plugin)) | `ide_find_references`, `ide_find_implementations`, `ide_type_hierarchy` | `ide_refactor_rename` | Apache-2.0 |
+| [AgentBridge](https://plugins.jetbrains.com/plugin/30415-agentbridge) ([source](https://github.com/catatafishen/agentbridge)) | `find_references`, `find_implementations`, `get_call_hierarchy` | 120+ tools including IDE-native editing | Apache-2.0 |
+| [MCP Steroid](https://mcp-steroid.jonnyzzz.com/) ([source](https://github.com/jonnyzzz/mcp-steroid)) | via `steroid_execute_code` (runs Kotlin against IntelliJ APIs) | same approach — scripted access to all IDE APIs | Apache-2.0 |
+| [IntelliJ Agent CLI](https://github.com/Haehnchen/idea-intellij-cli) | `find_references` via HTTP API + Go CLI | yes | no license |
+
 ![IntelliJ MCP tools](docs/img/intellij-mcp-tools.svg)
 
 ## Diagnostics
