@@ -1,6 +1,12 @@
 # agy-acp
 
-ACP (Agent Client Protocol) adapter that wraps Google's Antigravity SDK for use in JetBrains IDEs and Zed.
+ACP (Agent Client Protocol) adapter that wraps Google's [Antigravity SDK](https://antigravity.google/blog/introducing-google-antigravity-sdk) to run as a coding agent in JetBrains IDEs and Zed via [ACP](https://agentclientprotocol.com/).
+
+### Background
+
+The Antigravity SDK (`pip install google-antigravity`) launched at [I/O 2026](https://antigravity.google/blog/introducing-google-antigravity-2-0) as part of the Antigravity 2.0 platform (desktop app, [CLI](https://antigravity.google/blog/introducing-google-antigravity-cli), SDK, Managed Agents API, Enterprise Agent Platform). The CLI [succeeded Gemini CLI](https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/) in June 2026. Community discussion: [SDK announcement](https://www.reddit.com/r/google_antigravity/comments/1thxpmr/google_antigravity_sdk/), [unofficial Antigravity SDK](https://github.com/Kanezal/antigravity-sdk) (TypeScript, AGPL-3.0 — for building Antigravity IDE extensions, [thread](https://www.reddit.com/r/google_antigravity/comments/1rh2yhg/i_built_the_first_community_sdk_for_google/)).
+
+> **API key, not Antigravity login.** This project uses a Gemini API key (from [AI Studio](https://aistudio.google.com/apikey) or Vertex). Using third-party software with an Antigravity account [violates Google's TOS](https://antigravity.google/docs/faq#why-cant-i-use-third-party-software-eg-claude-code-openclaw-opencode-with-my-antigravity-login) and may result in account termination.
 
 ## Prerequisites
 
