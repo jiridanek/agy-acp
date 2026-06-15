@@ -503,6 +503,24 @@ def _tool_kind(name: str) -> str:
     return "other"
 
 
+def _permission_content(tool_name: str, args: Any) -> list | None:
+    if not isinstance(args, dict):
+        return None
+    if tool_name == "edit_file":
+        path = args.get("path", "")
+        old_string = args.get("old_string", "")
+        new_string = args.get("new_string", "")
+        return [tool_diff_content(path=path, new_text=new_string, old_text=old_string)]
+    if tool_name == "create_file":
+        path = args.get("path", "")
+        content = args.get("content", "")
+        return [tool_diff_content(path=path, new_text=content)]
+    if tool_name == "run_command":
+        command = args.get("command", "")
+        return [tool_content(text_block(f"```\n{command}\n```"))]
+    return None
+
+
 _PLAN_LINE_RE = re.compile(
     r"^\s*(?:"
     r"[-*]\s+\[([xX /\-])\]\s+(.*)"  # - [x] item  or  * [ ] item
@@ -668,10 +686,13 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
             requester=requester,
         )
 
+        content = _permission_content(tool_name, data.args)
+
         try:
             resp = await broker.request_for(
                 external_id=tool_call_id,
                 tool_call=tool_call,
+                content=content,
                 description=_permission_description(str(data.name), data.args),
             )
             outcome = resp.outcome
