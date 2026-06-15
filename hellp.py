@@ -538,11 +538,9 @@ def _parse_plan_entries(lines: list[str]) -> list:
 
 def _convert_mcp_server(server: HttpMcpServer | SseMcpServer | McpServerStdio):
     """Convert ACP MCP server config to Antigravity SDK type."""
-    from google.antigravity import types as agy_types
-
     if isinstance(server, (HttpMcpServer, SseMcpServer)):
         headers = {h.name: h.value for h in server.headers} if server.headers else {}
-        return agy_types.McpStreamableHttpServer(
+        return agy.types.McpStreamableHttpServer(
             name=server.name,
             url=server.url,
             type="http",
@@ -564,14 +562,14 @@ def _convert_mcp_server(server: HttpMcpServer | SseMcpServer | McpServerStdio):
             f"os.environ.update(e);"
             f"os.execvp({server.command!r},[{server.command!r}]+{server.args!r})"
         )
-        return agy_types.McpStdioServer(
+        return agy.types.McpStdioServer(
             name=server.name,
             command=sys.executable,
             args=["-ISs", "-c", loader],
             type="stdio",
         )
 
-    return agy_types.McpStdioServer(
+    return agy.types.McpStdioServer(
         name=server.name,
         command=server.command,
         args=server.args,
@@ -997,25 +995,23 @@ class EchoAgent(Agent):
         save_dir: str | None = None,
     ):
         """Build an Antigravity SDK config from session state."""
-        from google.antigravity import types as agy_types
-
         s = session.state
         compaction_threshold = _CONTEXT_PRESETS.get(s.context_level, 50_000)
         enabled_tools, custom_tools = self._build_tools_config()
         cwd = s.cwd
         return self._agent_config_t(
-            capabilities=agy_types.CapabilitiesConfig(
+            capabilities=agy.types.CapabilitiesConfig(
                 enabled_tools=enabled_tools,
                 compaction_threshold=compaction_threshold,
             ),
             policies=[agy_policy.allow_all()],
             tools=custom_tools,
-            gemini_config=agy_types.GeminiConfig(
-                models=agy_types.ModelConfig(
-                    default=agy_types.ModelEntry(
+            gemini_config=agy.types.GeminiConfig(
+                models=agy.types.ModelConfig(
+                    default=agy.types.ModelEntry(
                         name=s.model,
-                        generation=agy_types.GenerationConfig(
-                            thinking_level=agy_types.ThinkingLevel(s.thinking_level)
+                        generation=agy.types.GenerationConfig(
+                            thinking_level=agy.types.ThinkingLevel(s.thinking_level)
                             if not s.model.startswith("gemini-2.")
                             else None,
                         ),
@@ -1236,35 +1232,33 @@ class EchoAgent(Agent):
         - SDK builtins we replace with IDE-routing closures when client supports the capability
         - SDK builtins we leave enabled when client doesn't support the capability (fallback)
         """
-        from google.antigravity import types as agy_types
-
         can_read, can_write, can_terminal = self._check_client_caps()
         enabled = [
-            agy_types.BuiltinTools.LIST_DIR,
-            agy_types.BuiltinTools.FIND_FILE,
-            agy_types.BuiltinTools.SEARCH_DIR,
-            agy_types.BuiltinTools.ASK_QUESTION,
-            agy_types.BuiltinTools.FINISH,
-            agy_types.BuiltinTools.START_SUBAGENT,
-            agy_types.BuiltinTools.GENERATE_IMAGE,
+            agy.types.BuiltinTools.LIST_DIR,
+            agy.types.BuiltinTools.FIND_FILE,
+            agy.types.BuiltinTools.SEARCH_DIR,
+            agy.types.BuiltinTools.ASK_QUESTION,
+            agy.types.BuiltinTools.FINISH,
+            agy.types.BuiltinTools.START_SUBAGENT,
+            agy.types.BuiltinTools.GENERATE_IMAGE,
         ]
         custom_tools = []
 
         if can_read:
             custom_tools.append(self.view_file)
         else:
-            enabled.append(agy_types.BuiltinTools.VIEW_FILE)
+            enabled.append(agy.types.BuiltinTools.VIEW_FILE)
 
         if can_write:
             custom_tools.extend([self.create_file, self.edit_file])
         else:
-            enabled.append(agy_types.BuiltinTools.CREATE_FILE)
-            enabled.append(agy_types.BuiltinTools.EDIT_FILE)
+            enabled.append(agy.types.BuiltinTools.CREATE_FILE)
+            enabled.append(agy.types.BuiltinTools.EDIT_FILE)
 
         if can_terminal:
             custom_tools.append(self.run_command)
         else:
-            enabled.append(agy_types.BuiltinTools.RUN_COMMAND)
+            enabled.append(agy.types.BuiltinTools.RUN_COMMAND)
 
         return enabled, custom_tools
 
@@ -1292,8 +1286,6 @@ class EchoAgent(Agent):
 
         if self._is_intellij and self._external_skills_dir is None:
             self._external_skills_dir = _setup_external_skills(_INTELLIJ_EXTERNAL_SKILLS)
-
-        from google.antigravity import types as agy_types
 
         # Build standalone tool functions that capture `self` via closure.
         # Bound methods can't be passed directly because LocalAgentConfig

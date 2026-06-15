@@ -16,7 +16,6 @@ from acp.schema import (
     FileSystemCapabilities,
     TextContentBlock,
 )
-from google.antigravity import types as agy_types
 
 _TEST_CLIENT_CAPS = ClientCapabilities(
     fs=FileSystemCapabilities(read_text_file=True, write_text_file=True),
@@ -56,7 +55,7 @@ class FakeAgent:
             chunks = self._responses[self._call_index]
             self._call_index += 1
         else:
-            chunks = [agy_types.Text(step_index=0, text="default response")]
+            chunks = [agy.types.Text(step_index=0, text="default response")]
 
         pre_hooks = self._pre_hooks
         post_hooks = self._post_hooks
@@ -70,14 +69,14 @@ class FakeAgent:
 
             pending_contexts: dict[str, OperationContext] = {}
             for c in chunks:
-                if isinstance(c, agy_types.ToolCall):
+                if isinstance(c, agy.types.ToolCall):
                     op_ctx = OperationContext(TurnContext(SessionContext()))
                     if c.id:
                         pending_contexts[c.id] = op_ctx
                     for h in pre_hooks:
                         await h.run(op_ctx, c)
                     yield c
-                elif isinstance(c, agy_types.ToolResult):
+                elif isinstance(c, agy.types.ToolResult):
                     op_ctx = pending_contexts.pop(c.id, None) if c.id else None
                     if op_ctx is None:
                         op_ctx = OperationContext(TurnContext(SessionContext()))
@@ -86,7 +85,7 @@ class FakeAgent:
                 else:
                     yield c
 
-        return agy_types.ChatResponse(stream(), conversation=MagicMock())
+        return agy.types.ChatResponse(stream(), conversation=MagicMock())
 
 
 def test_tool_title_command_line():
@@ -175,9 +174,9 @@ async def test_offline_prompt_text():
     import hellp
 
     chunks = [
-        agy_types.Thought(step_index=0, text="let me think"),
-        agy_types.Text(step_index=1, text="Hello "),
-        agy_types.Text(step_index=1, text="back!"),
+        agy.types.Thought(step_index=0, text="let me think"),
+        agy.types.Text(step_index=1, text="Hello "),
+        agy.types.Text(step_index=1, text="back!"),
     ]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
@@ -213,8 +212,8 @@ async def test_offline_prompt_with_tool_calls():
     import hellp
 
     chunks = [
-        agy_types.ToolCall(id="tc1", name="read_file", args={"path": "foo.py"}),
-        agy_types.Text(step_index=1, text="Done."),
+        agy.types.ToolCall(id="tc1", name="read_file", args={"path": "foo.py"}),
+        agy.types.Text(step_index=1, text="Done."),
     ]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
@@ -335,13 +334,13 @@ async def test_offline_hook_tool_tracking():
 
         op_ctx = OperationContext(TurnContext(SessionContext()))
 
-        tc = agy_types.ToolCall(id="tc1", name="view_file", args={"path": "hello.py"})
+        tc = agy.types.ToolCall(id="tc1", name="view_file", args={"path": "hello.py"})
         pre_hook = hellp.MyPreToolCallDecideHook(sut)
         result = await pre_hook.run(op_ctx, tc)
         assert result.allow is True
 
         post_hook = hellp.MyPostToolCallHook(sut)
-        tr = agy_types.ToolResult(id="tc1", name="view_file", result="file contents")
+        tr = agy.types.ToolResult(id="tc1", name="view_file", result="file contents")
         await post_hook.run(op_ctx, tr)
     finally:
         hellp.current_session_id.reset(token)
@@ -390,7 +389,7 @@ async def test_offline_hook_run_command_requires_permission():
 
         op_ctx = OperationContext(TurnContext(SessionContext()))
 
-        tc = agy_types.ToolCall(id="tc2", name="run_command", args={"command": "ls"})
+        tc = agy.types.ToolCall(id="tc2", name="run_command", args={"command": "ls"})
         pre_hook = hellp.MyPreToolCallDecideHook(sut)
         result = await pre_hook.run(op_ctx, tc)
         assert result.allow is True
@@ -428,7 +427,7 @@ async def test_offline_hook_run_command_denied():
 
         op_ctx = OperationContext(TurnContext(SessionContext()))
 
-        tc = agy_types.ToolCall(
+        tc = agy.types.ToolCall(
             id="tc3", name="run_command", args={"command": "rm -rf /"}
         )
         pre_hook = hellp.MyPreToolCallDecideHook(sut)
@@ -475,7 +474,7 @@ async def test_offline_hook_mcp_tool_requires_permission():
 
         op_ctx = OperationContext(TurnContext(SessionContext()))
 
-        tc = agy_types.ToolCall(
+        tc = agy.types.ToolCall(
             id="tc-mcp", name="mcp_idea_execute_tool", args={"command": "echo hi"}
         )
         pre_hook = hellp.MyPreToolCallDecideHook(sut)
@@ -514,7 +513,7 @@ async def test_offline_hook_sdk_builtin_tools_auto_allow():
 
         for tool_name in ("ask_question", "finish", "start_subagent", "generate_image"):
             op_ctx = OperationContext(TurnContext(SessionContext()))
-            tc = agy_types.ToolCall(id=f"tc-{tool_name}", name=tool_name, args={})
+            tc = agy.types.ToolCall(id=f"tc-{tool_name}", name=tool_name, args={})
             result = await pre_hook.run(op_ctx, tc)
             assert result.allow is True, f"{tool_name} should auto-allow"
     finally:
@@ -670,8 +669,8 @@ async def test_offline_plan_updates_numbered_lists():
     import hellp
 
     chunks = [
-        agy_types.Thought(step_index=0, text="Steps:\n1. First\n2. Second\n3. Third"),
-        agy_types.Text(step_index=1, text="Done."),
+        agy.types.Thought(step_index=0, text="Steps:\n1. First\n2. Second\n3. Third"),
+        agy.types.Text(step_index=1, text="Done."),
     ]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
@@ -706,11 +705,11 @@ async def test_offline_plan_updates():
     import hellp
 
     chunks = [
-        agy_types.Thought(
+        agy.types.Thought(
             step_index=0,
             text="I should structure my tasks:\n- [ ] Task 1\n- [x] Task 2\n* Task 3",
         ),
-        agy_types.Text(step_index=1, text="Thinking complete."),
+        agy.types.Text(step_index=1, text="Thinking complete."),
     ]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
@@ -750,14 +749,14 @@ async def test_offline_rich_tool_outputs():
 
     # Simulating a file edit and a run_command
     chunks = [
-        agy_types.ToolCall(
+        agy.types.ToolCall(
             id="tc-edit",
             name="edit_file",
             args={"path": "foo.txt", "content": "new contents"},
         ),
-        agy_types.ToolResult(id="tc-edit", name="edit_file", result="Success"),
-        agy_types.ToolCall(id="tc-run", name="run_command", args={"command": "ls -l"}),
-        agy_types.ToolResult(id="tc-run", name="run_command", result="total 0"),
+        agy.types.ToolResult(id="tc-edit", name="edit_file", result="Success"),
+        agy.types.ToolCall(id="tc-run", name="run_command", args={"command": "ls -l"}),
+        agy.types.ToolResult(id="tc-run", name="run_command", result="total 0"),
     ]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
@@ -866,7 +865,7 @@ async def test_offline_nonzero_exit_code_marks_failed():
         op_ctx.set("acp_tc_id", "tc-fail")
 
         post_hook = hellp.MyPostToolCallHook(sut)
-        tr = agy_types.ToolResult(id="tc-fail", name="run_command", result="")
+        tr = agy.types.ToolResult(id="tc-fail", name="run_command", result="")
         await post_hook.run(op_ctx, tr)
     finally:
         hellp.current_session_id.reset(token)
@@ -888,7 +887,7 @@ async def test_offline_session_modes():
     fake_agent = FakeAgent(
         config=None,
         responses=[
-            [agy_types.Text(step_index=0, text="plan step 1")],
+            [agy.types.Text(step_index=0, text="plan step 1")],
         ],
     )
     sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
@@ -952,7 +951,7 @@ async def _run_hook(pre_hook, tool_name, args=None):
     )
 
     op_ctx = OperationContext(TurnContext(SessionContext()))
-    tc = agy_types.ToolCall(id=f"tc-{tool_name}", name=tool_name, args=args or {})
+    tc = agy.types.ToolCall(id=f"tc-{tool_name}", name=tool_name, args=args or {})
     return await pre_hook.run(op_ctx, tc)
 
 
@@ -1096,7 +1095,7 @@ async def test_offline_session_persistence(tmp_path):
     import hellp
 
     store = hellp.SessionStore(path=tmp_path / "sessions.json")
-    chunks = [agy_types.Text(step_index=0, text="hi")]
+    chunks = [agy.types.Text(step_index=0, text="hi")]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
     sut = hellp.EchoAgent(
@@ -1135,9 +1134,9 @@ async def test_offline_load_session(tmp_path):
     import hellp
 
     store = hellp.SessionStore(path=tmp_path / "sessions.json")
-    chunks = [agy_types.Text(step_index=0, text="response")]
+    chunks = [agy.types.Text(step_index=0, text="response")]
     fake_agent = FakeAgent(
-        config=None, responses=[chunks, [agy_types.Text(step_index=0, text="resumed")]]
+        config=None, responses=[chunks, [agy.types.Text(step_index=0, text="resumed")]]
     )
 
     sut = hellp.EchoAgent(
@@ -1167,7 +1166,7 @@ async def test_offline_usage_tracking():
     """Verify usage metadata from the response is included in PromptResponse."""
     import hellp
 
-    chunks = [agy_types.Text(step_index=0, text="Hi")]
+    chunks = [agy.types.Text(step_index=0, text="Hi")]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
     sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
@@ -1190,7 +1189,7 @@ async def test_offline_cost_estimation():
     """Cost is computed from model pricing and included in UsageUpdate."""
     import hellp
 
-    chunks = [agy_types.Text(step_index=0, text="Hi")]
+    chunks = [agy.types.Text(step_index=0, text="Hi")]
 
     conv_mock = MagicMock()
     conv_mock.last_turn_usage = MagicMock(
@@ -1223,7 +1222,7 @@ async def test_offline_cost_estimation():
                 for c in chunks:
                     yield c
 
-            return agy_types.ChatResponse(stream(), conversation=conv_mock)
+            return agy.types.ChatResponse(stream(), conversation=conv_mock)
 
     sut = hellp.EchoAgent(agent_t=CostFakeAgent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
@@ -1284,9 +1283,9 @@ async def test_offline_cost_pro_long_context_surcharge():
 
         async def chat(self, prompt):
             async def stream():
-                yield agy_types.Text(step_index=0, text="Hi")
+                yield agy.types.Text(step_index=0, text="Hi")
 
-            return agy_types.ChatResponse(stream(), conversation=conv_mock)
+            return agy.types.ChatResponse(stream(), conversation=conv_mock)
 
     sut = hellp.EchoAgent(agent_t=CostProAgent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
@@ -1315,7 +1314,7 @@ async def test_offline_cost_unknown_model():
     """Unknown model produces no cost (cost=None)."""
     import hellp
 
-    chunks = [agy_types.Text(step_index=0, text="Hi")]
+    chunks = [agy.types.Text(step_index=0, text="Hi")]
 
     conv_mock = MagicMock()
     conv_mock.last_turn_usage = MagicMock(
@@ -1348,7 +1347,7 @@ async def test_offline_cost_unknown_model():
                 for c in chunks:
                     yield c
 
-            return agy_types.ChatResponse(stream(), conversation=conv_mock)
+            return agy.types.ChatResponse(stream(), conversation=conv_mock)
 
     sut = hellp.EchoAgent(agent_t=CostFakeAgent2, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
@@ -1379,9 +1378,9 @@ async def test_offline_cancel():
     import hellp
 
     async def slow_stream():
-        yield agy_types.Text(step_index=0, text="start ")
+        yield agy.types.Text(step_index=0, text="start ")
         await asyncio.sleep(10)
-        yield agy_types.Text(step_index=1, text="should not reach")
+        yield agy.types.Text(step_index=1, text="should not reach")
 
     class SlowFakeAgent:
         def __init__(self, config):
@@ -1397,7 +1396,7 @@ async def test_offline_cancel():
             pass
 
         async def chat(self, prompt):
-            return agy_types.ChatResponse(slow_stream(), conversation=MagicMock())
+            return agy.types.ChatResponse(slow_stream(), conversation=MagicMock())
 
     sut = hellp.EchoAgent(agent_t=SlowFakeAgent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
@@ -1649,7 +1648,7 @@ async def test_offline_model_persisted_in_session(tmp_path):
     import hellp
 
     store = hellp.SessionStore(path=tmp_path / "sessions.json")
-    chunks = [agy_types.Text(step_index=0, text="ok")]
+    chunks = [agy.types.Text(step_index=0, text="ok")]
     fake_agent = FakeAgent(config=None, responses=[chunks])
     sut = hellp.EchoAgent(
         agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store
@@ -1706,8 +1705,8 @@ async def test_offline_reset_command():
     """/reset command rebuilds agent and clears session title."""
     import hellp
 
-    chunks1 = [agy_types.Text(step_index=0, text="first response")]
-    chunks2 = [agy_types.Text(step_index=0, text="after reset")]
+    chunks1 = [agy.types.Text(step_index=0, text="first response")]
+    chunks2 = [agy.types.Text(step_index=0, text="after reset")]
     fake_agent = FakeAgent(config=None, responses=[chunks1, chunks2])
     sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
@@ -2019,7 +2018,7 @@ async def test_offline_clear_is_reset_alias():
     """/clear works the same as /reset."""
     import hellp
 
-    chunks = [agy_types.Text(step_index=0, text="response")]
+    chunks = [agy.types.Text(step_index=0, text="response")]
     fake_agent = FakeAgent(config=None, responses=[chunks])
     sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
@@ -2213,7 +2212,7 @@ async def test_offline_resume_session(tmp_path, monkeypatch):
     monkeypatch.setattr(hellp, "_DEFAULT_SAVE_DIR", str(traj_dir))
 
     store = hellp.SessionStore(path=tmp_path / "sessions.json")
-    chunks = [agy_types.Text(step_index=0, text="hello")]
+    chunks = [agy.types.Text(step_index=0, text="hello")]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
     configs_seen = []
@@ -2299,15 +2298,15 @@ async def test_live_skill_magic_word():
     # so the agent can only activate skills and respond with text
     cwd = str(Path(".").resolve())
     config = agy.LocalAgentConfig(
-        capabilities=agy_types.CapabilitiesConfig(enabled_tools=[]),
+        capabilities=agy.types.CapabilitiesConfig(enabled_tools=[]),
         skills_paths=_skills_paths(cwd),
         workspaces=[cwd],
-        gemini_config=agy_types.GeminiConfig(
-            models=agy_types.ModelConfig(
-                default=agy_types.ModelEntry(
+        gemini_config=agy.types.GeminiConfig(
+            models=agy.types.ModelConfig(
+                default=agy.types.ModelEntry(
                     name="gemini-3.1-flash-lite",
-                    generation=agy_types.GenerationConfig(
-                        thinking_level=agy_types.ThinkingLevel("minimal"),
+                    generation=agy.types.GenerationConfig(
+                        thinking_level=agy.types.ThinkingLevel("minimal"),
                     ),
                 ),
             ),
@@ -2318,7 +2317,7 @@ async def test_live_skill_magic_word():
         response = await agent.chat(["/magic-word"])
         chunks = []
         async for chunk in response.chunks:
-            if isinstance(chunk, agy_types.Text):
+            if isinstance(chunk, agy.types.Text):
                 chunks.append(chunk.text)
         combined = "".join(chunks).lower()
         assert "vlak" in combined, f"Expected 'vlak' in response, got: {combined[:200]}"
