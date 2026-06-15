@@ -9,6 +9,7 @@ import tempfile
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
@@ -277,6 +278,30 @@ class SessionStore:
         data = self._read()
         data.pop(session_id, None)
         self._write(data)
+
+
+@dataclass
+class Session:
+    state: SessionState
+    agent: agy.Agent | None = None
+    mcp_servers_raw: list[HttpMcpServer | SseMcpServer | McpServerStdio] = field(default_factory=list)
+    additional_dirs: list[str] = field(default_factory=list)
+    cumulative_cost: float = 0.0
+    last_file_edits: dict[str, dict[str, str | None]] = field(default_factory=dict)
+    last_terminal_id: str | None = None
+    last_exit_code: int | None = None
+    last_usage: dict[str, int | None] = field(default_factory=dict)
+
+    async def start_agent(self, agent_t, config, hooks: list | None = None):
+        self.agent = agent_t(config)
+        for hook in hooks or []:
+            self.agent.register_hook(hook)
+        await self.agent.__aenter__()
+
+    async def close(self):
+        if self.agent:
+            await self.agent.__aexit__(None, None, None)
+            self.agent = None
 
 
 def _tool_title(name: str, args: Any) -> str:
@@ -567,7 +592,10 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
         title = _tool_title(str(data.name), data.args)
 
         context.set("acp_tc_id", tool_call_id)
-        mode = self.echo_agent._sessions[session_id].mode
+        session = self.echo_agent._sessions.get(session_id)
+        if not session:
+            return HookResult(allow=False, message="Session no longer active")
+        mode = session.state.mode
         tool_name = str(data.name)
         log.debug("Intercepted tool call %s in session %s (mode=%s)", data.name, session_id, mode)
 
@@ -698,12 +726,11 @@ class MyPostToolCallHook(PostToolCallHook):
         raw_output = data.error or data.result
 
         try:
+            session = self.echo_agent._sessions.get(session_id)
             view = self.echo_agent._tracker.view(tc_id)
             if view.kind == "edit" and isinstance(view.raw_input, dict):
                 path = view.raw_input.get("path")
-                edit_info = self.echo_agent._last_file_edits.pop(
-                    (session_id, path), None
-                )
+                edit_info = session.last_file_edits.pop(path, None) if session else None
                 if edit_info:
                     content = [
                         tool_diff_content(
@@ -712,12 +739,14 @@ class MyPostToolCallHook(PostToolCallHook):
                             old_text=edit_info["old_text"],
                         )
                     ]
-            elif view.kind == "execute":
-                exit_code = self.echo_agent._last_exit_codes.pop(session_id, None)
+            elif view.kind == "execute" and session:
+                exit_code = session.last_exit_code
+                session.last_exit_code = None
                 if exit_code is not None and exit_code != 0:
                     status = "failed"
                     raw_output = {"exit_code": exit_code, "output": data.result}
-                terminal_id = self.echo_agent._last_terminal_ids.pop(session_id, None)
+                terminal_id = session.last_terminal_id
+                session.last_terminal_id = None
                 if terminal_id:
                     content = [tool_terminal_ref(terminal_id=terminal_id)]
         except KeyError:
@@ -736,7 +765,6 @@ class MyPostToolCallHook(PostToolCallHook):
 
 class EchoAgent(Agent):
     _conn: Client
-    _agent: agy.Agent
 
     def __init__(self, agent_t, agent_config_t, store: SessionStore | None = None):
         self._agent_t = agent_t
@@ -744,18 +772,20 @@ class EchoAgent(Agent):
         self._store = store or SessionStore()
         self._tracker = ToolCallTracker()
         self._active_tasks: dict[str, asyncio.Task] = {}
-        self._sessions: dict[str, SessionState] = {}
+        self._sessions: dict[str, Session] = {}
         self._active_session_id: str | None = None
-        self._session_additional_dirs: dict[str, list[str]] = {}
-        self._session_mcp_servers_raw: dict[str, list] = {}  # original ACP objects, re-converted on each rebuild (env workaround creates single-use temp files)
-        self._session_cumulative_cost: dict[str, float] = {}
-        self._last_file_edits: dict[tuple[str, str], dict[str, str | None]] = {}
-        self._last_terminal_ids: dict[str, str] = {}
-        self._last_exit_codes: dict[str, int] = {}
-        self._last_usage: dict[str, dict] = {}
         self._client_capabilities: ClientCapabilities | None = None
         self._client_info: Implementation | None = None
         self._external_skills_dir: str | None = None
+
+    def _get_session(self, session_id: str) -> Session:
+        try:
+            return self._sessions[session_id]
+        except KeyError:
+            raise ValueError(f"Unknown session: {session_id}")
+
+    def _hooks(self) -> list:
+        return [MyPreToolCallDecideHook(self), MyPostToolCallHook(self)]
 
     @property
     def _is_intellij(self) -> bool:
@@ -778,17 +808,10 @@ class EchoAgent(Agent):
     async def close_session(
         self, session_id: str, **kwargs: Any
     ) -> CloseSessionResponse:
-        await self._agent.__aexit__(None, None, None)
-        self._sessions.pop(session_id, None)
-        self._session_additional_dirs.pop(session_id, None)
-        self._session_mcp_servers_raw.pop(session_id, None)
-        self._session_cumulative_cost.pop(session_id, None)
+        session = self._sessions.pop(session_id, None)
+        if session:
+            await session.close()
         self._active_tasks.pop(session_id, None)
-        self._last_terminal_ids.pop(session_id, None)
-        self._last_exit_codes.pop(session_id, None)
-        self._last_usage.pop(session_id, None)
-        for key in [k for k in self._last_file_edits if k[0] == session_id]:
-            del self._last_file_edits[key]
         self._store.delete(session_id)
         return CloseSessionResponse()
 
@@ -796,7 +819,7 @@ class EchoAgent(Agent):
         self, mode_id: str, session_id: str, **kwargs: Any
     ) -> SetSessionModeResponse:
         log.debug("set_session_mode mode=%s session=%s", mode_id, session_id)
-        self._sessions[session_id].mode = mode_id
+        self._get_session(session_id).state.mode = mode_id
         await self._conn.session_update(
             session_id=session_id,
             update=CurrentModeUpdate(
@@ -807,7 +830,7 @@ class EchoAgent(Agent):
         return SetSessionModeResponse()
 
     def _build_config_options(self, session_id: str) -> list[SessionConfigOptionSelect]:
-        s = self._sessions[session_id]
+        s = self._get_session(session_id).state
         current_mode = s.mode
         current_model = s.model
         current_thinking = s.thinking_level
@@ -881,7 +904,8 @@ class EchoAgent(Agent):
             value,
             session_id,
         )
-        s = self._sessions[session_id]
+        session = self._get_session(session_id)
+        s = session.state
         # IDE clients (e.g. IntelliJ) echo back current config values after each
         # prompt — skip the expensive _rebuild_agent when nothing actually changed.
         current = {
@@ -908,19 +932,19 @@ class EchoAgent(Agent):
             s.model = value
             await self._rebuild_agent(
                 session_id,
-                conversation_id=getattr(self._agent, "conversation_id", None),
+                conversation_id=getattr(session.agent, "conversation_id", None),
             )
         elif config_id == "thinking_level" and isinstance(value, str):
             s.thinking_level = value
             await self._rebuild_agent(
                 session_id,
-                conversation_id=getattr(self._agent, "conversation_id", None),
+                conversation_id=getattr(session.agent, "conversation_id", None),
             )
         elif config_id == "context" and isinstance(value, str):
             s.context_level = value
             await self._rebuild_agent(
                 session_id,
-                conversation_id=getattr(self._agent, "conversation_id", None),
+                conversation_id=getattr(session.agent, "conversation_id", None),
             )
         updated = self._build_config_options(session_id)
         await self._conn.session_update(
@@ -943,10 +967,50 @@ class EchoAgent(Agent):
         return AuthenticateResponse()
 
     def _build_model_state(self, session_id: str) -> SessionModelState:
-        current = self._sessions[session_id].model
+        current = self._get_session(session_id).state.model
         return SessionModelState(
             current_model_id=current,
             available_models=_AVAILABLE_MODELS,
+        )
+
+    def _build_agent_config(
+        self,
+        session: Session,
+        conversation_id: str | None = None,
+        save_dir: str | None = None,
+    ):
+        """Build an Antigravity SDK config from session state."""
+        from google.antigravity import types as agy_types
+
+        s = session.state
+        compaction_threshold = _CONTEXT_PRESETS.get(s.context_level, 50_000)
+        enabled_tools, custom_tools = self._build_tools_config()
+        cwd = s.cwd
+        return self._agent_config_t(
+            capabilities=agy_types.CapabilitiesConfig(
+                enabled_tools=enabled_tools,
+                compaction_threshold=compaction_threshold,
+            ),
+            policies=[agy_policy.allow_all()],
+            tools=custom_tools,
+            gemini_config=agy_types.GeminiConfig(
+                models=agy_types.ModelConfig(
+                    default=agy_types.ModelEntry(
+                        name=s.model,
+                        generation=agy_types.GenerationConfig(
+                            thinking_level=agy_types.ThinkingLevel(s.thinking_level)
+                            if not s.model.startswith("gemini-2.")
+                            else None,
+                        ),
+                    ),
+                ),
+            ),
+            conversation_id=conversation_id,
+            save_dir=save_dir or _DEFAULT_SAVE_DIR,
+            workspaces=[cwd] + session.additional_dirs,
+            mcp_servers=_convert_mcp_servers(session.mcp_servers_raw or None),
+            skills_paths=_skills_paths(cwd)
+            + ([self._external_skills_dir] if self._external_skills_dir else []),
         )
 
     async def _rebuild_agent(
@@ -955,62 +1019,29 @@ class EchoAgent(Agent):
         conversation_id: str | None = None,
         save_dir: str | None = None,
     ) -> None:
-        """Tear down and recreate the Antigravity agent with current model/thinking settings."""
-        s = self._sessions[session_id]
-        model_id = s.model
-        thinking = s.thinking_level
-        context_level = s.context_level
-        compaction_threshold = _CONTEXT_PRESETS.get(context_level, 50_000)
-
-        old_agent = self._agent
-        await old_agent.__aexit__(None, None, None)
-
-        from google.antigravity import types as agy_types
+        """Tear down and recreate the session's agent with current model/thinking settings."""
+        session = self._get_session(session_id)
+        old_agent = session.agent
+        if old_agent:
+            await old_agent.__aexit__(None, None, None)
 
         try:
-            enabled_tools, custom_tools = self._build_tools_config()
-            config = self._agent_config_t(
-                capabilities=agy_types.CapabilitiesConfig(
-                    enabled_tools=enabled_tools,
-                    compaction_threshold=compaction_threshold,
-                ),
-                policies=[agy_policy.allow_all()],
-                tools=custom_tools,
-                gemini_config=agy_types.GeminiConfig(
-                    models=agy_types.ModelConfig(
-                        default=agy_types.ModelEntry(
-                            name=model_id,
-                            generation=agy_types.GenerationConfig(
-                                # 2.5 models don't support thinking level
-                                thinking_level=agy_types.ThinkingLevel(thinking)
-                                if not model_id.startswith("gemini-2.")
-                                else None,
-                            ),
-                        ),
-                    ),
-                ),
-                conversation_id=conversation_id,
-                save_dir=save_dir or _DEFAULT_SAVE_DIR,
-                workspaces=[getattr(self, "_cwd", ".")]
-                + self._session_additional_dirs.get(session_id, []),
-                mcp_servers=_convert_mcp_servers(self._session_mcp_servers_raw.get(session_id)),
-                skills_paths=_skills_paths(getattr(self, "_cwd", "."))
-                + ([self._external_skills_dir] if self._external_skills_dir else []),
-            )
+            config = self._build_agent_config(session, conversation_id, save_dir)
             new_agent = self._agent_t(config)
-            new_agent.register_hook(MyPreToolCallDecideHook(self))
-            new_agent.register_hook(MyPostToolCallHook(self))
+            for hook in self._hooks():
+                new_agent.register_hook(hook)
             await new_agent.__aenter__()
-            self._agent = new_agent
+            session.agent = new_agent
         except Exception:
             log.exception("_rebuild_agent failed, restoring previous agent")
-            await old_agent.__aenter__()
-            self._agent = old_agent
+            if old_agent:
+                await old_agent.__aenter__()
+            session.agent = old_agent
             raise
         log.debug(
             "rebuilt agent model=%s thinking=%s conv=%s",
-            model_id,
-            thinking,
+            session.state.model,
+            session.state.thinking_level,
             conversation_id,
         )
 
@@ -1021,9 +1052,10 @@ class EchoAgent(Agent):
         **kwargs: Any,
     ) -> SetSessionModelResponse | None:
         log.debug("set_session_model model=%s session=%s", model_id, session_id)
-        self._sessions[session_id].model = model_id
+        session = self._get_session(session_id)
+        session.state.model = model_id
         await self._rebuild_agent(
-            session_id, conversation_id=getattr(self._agent, "conversation_id", None)
+            session_id, conversation_id=getattr(session.agent, "conversation_id", None)
         )
         return SetSessionModelResponse()
 
@@ -1037,35 +1069,40 @@ class EchoAgent(Agent):
     ) -> ForkSessionResponse:
         log.debug("fork_session from %s", session_id)
         new_id = uuid4().hex
-        parent = self._sessions[session_id]
-        title = f"{parent.title} (fork)" if parent.title else None
+        parent = self._get_session(session_id)
+        ps = parent.state
+        title = f"{ps.title} (fork)" if ps.title else None
 
-        self._cwd = cwd
-        self._sessions[new_id] = SessionState(
+
+        new_state = SessionState(
             session_id=new_id,
             cwd=cwd,
-            mode=parent.mode,
-            model=parent.model,
-            thinking_level=parent.thinking_level,
-            context_level=parent.context_level,
+            mode=ps.mode,
+            model=ps.model,
+            thinking_level=ps.thinking_level,
+            context_level=ps.context_level,
             title=title,
             updated_at=datetime.now(timezone.utc).isoformat(),
         )
-        self._session_additional_dirs[new_id] = (
-            additional_directories or self._session_additional_dirs.get(session_id, [])
-        )
-        if mcp_servers:
-            self._session_mcp_servers_raw[new_id] = list(mcp_servers)
-        elif session_id in self._session_mcp_servers_raw:
-            self._session_mcp_servers_raw[new_id] = self._session_mcp_servers_raw[session_id]
+        new_dirs = additional_directories or list(parent.additional_dirs)
+        new_mcp = list(mcp_servers) if mcp_servers else list(parent.mcp_servers_raw)
 
-        self._store.save(new_id, self._sessions[new_id])
+        new_session = Session(
+            state=new_state,
+            additional_dirs=new_dirs,
+            mcp_servers_raw=new_mcp,
+        )
+        config = self._build_agent_config(new_session)
+        await new_session.start_agent(self._agent_t, config, self._hooks())
+        self._sessions[new_id] = new_session
+
+        self._store.save(new_id, new_state)
 
         asyncio.ensure_future(self._send_available_commands(new_id))
 
         return ForkSessionResponse(
             session_id=new_id,
-            modes=_build_mode_state(self._sessions[new_id].mode),
+            modes=_build_mode_state(new_state.mode),
             models=self._build_model_state(new_id),
             config_options=self._build_config_options(new_id),
         )
@@ -1083,16 +1120,20 @@ class EchoAgent(Agent):
         if not stored:
             raise ValueError(f"Session not found: {session_id}")
 
-        self._cwd = cwd
-        stored.cwd = cwd
-        self._sessions[session_id] = stored
-        self._session_additional_dirs[session_id] = additional_directories or []
-        if mcp_servers:
-            self._session_mcp_servers_raw[session_id] = list(mcp_servers)
 
-        if stored.conversation_id:
-            log.debug("resuming conversation %s", stored.conversation_id)
-            await self._rebuild_agent(session_id, conversation_id=stored.conversation_id)
+        stored.cwd = cwd
+        session = Session(
+            state=stored,
+            additional_dirs=additional_directories or [],
+            mcp_servers_raw=list(mcp_servers) if mcp_servers else [],
+        )
+        conv_id = stored.conversation_id
+        config = self._build_agent_config(session, conversation_id=conv_id)
+        await session.start_agent(self._agent_t, config, self._hooks())
+        self._sessions[session_id] = session
+
+        if conv_id:
+            log.debug("resuming conversation %s", conv_id)
 
         asyncio.ensure_future(self._send_available_commands(session_id))
 
@@ -1134,16 +1175,20 @@ class EchoAgent(Agent):
         if not stored:
             return None
 
-        self._cwd = cwd
-        stored.cwd = cwd
-        self._sessions[session_id] = stored
-        self._session_additional_dirs[session_id] = additional_directories or []
-        if mcp_servers:
-            self._session_mcp_servers_raw[session_id] = list(mcp_servers)
 
-        if stored.conversation_id:
-            log.debug("restoring conversation %s for session %s", stored.conversation_id, session_id)
-            await self._rebuild_agent(session_id, conversation_id=stored.conversation_id)
+        stored.cwd = cwd
+        session = Session(
+            state=stored,
+            additional_dirs=additional_directories or [],
+            mcp_servers_raw=list(mcp_servers) if mcp_servers else [],
+        )
+        conv_id = stored.conversation_id
+        config = self._build_agent_config(session, conversation_id=conv_id)
+        await session.start_agent(self._agent_t, config, self._hooks())
+        self._sessions[session_id] = session
+
+        if conv_id:
+            log.debug("restoring conversation %s for session %s", conv_id, session_id)
 
         asyncio.ensure_future(self._send_available_commands(session_id))
 
@@ -1209,6 +1254,13 @@ class EchoAgent(Agent):
         client_info: Implementation | None = None,
         **kwargs: Any,
     ) -> InitializeResponse:
+        """Called once by the IDE after the ACP transport connects, before any session is created.
+
+        Lifecycle: transport connect → initialize() → new_session() → prompt() ...
+        This is the place to inspect client_info/client_capabilities and set up
+        resources that are shared across all sessions (e.g. external skills).
+        The Antigravity Agent is NOT created here — it's deferred to first prompt.
+        """
         log.debug(
             "initialize client_info=%s client_capabilities=%s",
             client_info,
@@ -1242,10 +1294,12 @@ class EchoAgent(Agent):
             """Creates a new file with the specified content via the IDE."""
             try:
                 sid = agent_ref._active_session_id
-                agent_ref._last_file_edits[(sid, path)] = {
-                    "old_text": None,
-                    "new_text": content,
-                }
+                session = agent_ref._sessions.get(sid)
+                if session:
+                    session.last_file_edits[path] = {
+                        "old_text": None,
+                        "new_text": content,
+                    }
                 await agent_ref._conn.write_text_file(
                     content=content, path=path, session_id=sid
                 )
@@ -1262,10 +1316,12 @@ class EchoAgent(Agent):
                 if old_string not in old_text:
                     return f"Error: old_string not found in '{path}'"
                 new_text = old_text.replace(old_string, new_string, 1)
-                agent_ref._last_file_edits[(sid, path)] = {
-                    "old_text": old_text,
-                    "new_text": new_text,
-                }
+                session = agent_ref._sessions.get(sid)
+                if session:
+                    session.last_file_edits[path] = {
+                        "old_text": old_text,
+                        "new_text": new_text,
+                    }
                 await agent_ref._conn.write_text_file(
                     content=new_text, path=path, session_id=sid
                 )
@@ -1281,7 +1337,9 @@ class EchoAgent(Agent):
                     command=command, session_id=sid
                 )
                 terminal_id = term_resp.terminal_id
-                agent_ref._last_terminal_ids[sid] = terminal_id
+                session = agent_ref._sessions.get(sid)
+                if session:
+                    session.last_terminal_id = terminal_id
                 exit_resp = await agent_ref._conn.wait_for_terminal_exit(
                     session_id=sid, terminal_id=terminal_id
                 )
@@ -1292,8 +1350,8 @@ class EchoAgent(Agent):
                     session_id=sid, terminal_id=terminal_id
                 )
                 exit_code = getattr(exit_resp, "exit_code", None)
-                if exit_code is not None:
-                    agent_ref._last_exit_codes[sid] = exit_code
+                if exit_code is not None and session:
+                    session.last_exit_code = exit_code
                 return out_resp.output
             except Exception as e:
                 return f"Error: Failed to run command '{command}': {e}"
@@ -1302,27 +1360,6 @@ class EchoAgent(Agent):
         self.create_file = create_file
         self.edit_file = edit_file
         self.run_command = run_command
-
-        enabled_tools, custom_tools = self._build_tools_config()
-        cwd = getattr(self, "_cwd", ".")
-        config = self._agent_config_t(
-            capabilities=agy_types.CapabilitiesConfig(enabled_tools=enabled_tools),
-            policies=[agy_policy.allow_all()],
-            tools=custom_tools,
-            skills_paths=_skills_paths(cwd)
-            + ([self._external_skills_dir] if self._external_skills_dir else []),
-            save_dir=_DEFAULT_SAVE_DIR,
-        )
-        self._agent = self._agent_t(config)
-
-        self._agent.register_hook(MyPreToolCallDecideHook(self))
-        self._agent.register_hook(MyPostToolCallHook(self))
-
-        try:
-            await self._agent.__aenter__()
-        except Exception:
-            log.exception("harness startup failed")
-            raise
 
         log.debug("initialized")
 
@@ -1368,24 +1405,18 @@ class EchoAgent(Agent):
         mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
         **kwargs: Any,
     ) -> NewSessionResponse:
-        self._cwd = cwd
+
         session_id = uuid4().hex
 
-        # Wire cwd + additional_directories to workspaces
-        workspaces = [cwd] + (additional_directories or [])
-        if hasattr(self._agent, "_config") and hasattr(
-            self._agent._config, "workspaces"
-        ):
-            self._agent._config.workspaces = workspaces
-
-        self._sessions[session_id] = SessionState(
-            session_id=session_id,
-            cwd=cwd,
-        )
-        self._session_additional_dirs[session_id] = additional_directories or []
         _log_mcp_servers("new_session", mcp_servers)
-        if mcp_servers:
-            self._session_mcp_servers_raw[session_id] = list(mcp_servers)
+        session = Session(
+            state=SessionState(session_id=session_id, cwd=cwd),
+            additional_dirs=additional_directories or [],
+            mcp_servers_raw=list(mcp_servers) if mcp_servers else [],
+        )
+        config = self._build_agent_config(session)
+        await session.start_agent(self._agent_t, config, self._hooks())
+        self._sessions[session_id] = session
         asyncio.ensure_future(self._send_available_commands(session_id))
 
         return NewSessionResponse(
@@ -1429,7 +1460,7 @@ class EchoAgent(Agent):
                     ),
                 ]
                 + _discover_skills(
-                    getattr(self, "_cwd", "."),
+                    self._sessions[session_id].state.cwd if session_id in self._sessions else ".",
                     extra_skills=_INTELLIJ_EXTERNAL_SKILLS if self._is_intellij else None,
                 )
 
@@ -1443,9 +1474,11 @@ class EchoAgent(Agent):
             return None
         name, arg = cmd[0], cmd[1] if len(cmd) > 1 else ""
 
+        session = self._get_session(session_id)
+
         if name in ("reset", "clear"):
             await self._rebuild_agent(session_id)
-            self._sessions[session_id].title = None
+            session.state.title = None
             return "Conversation reset."
 
         if name == "help":
@@ -1462,20 +1495,18 @@ class EchoAgent(Agent):
             )
 
         if name == "cost":
-            model = self._sessions[session_id].model
-            cost = self._session_cumulative_cost.get(session_id, 0.0)
-            return f"**Model:** {model}\n**Cumulative cost:** ${cost:.6f} USD"
+            model = session.state.model
+            return f"**Model:** {model}\n**Cumulative cost:** ${session.cumulative_cost:.6f} USD"
 
         if name == "usage":
-            usage = self._last_usage.get(session_id)
+            usage = session.last_usage
             if not usage:
                 return "No usage data yet — send a prompt first."
             lines = [f"**Last turn:**"]
             for k, v in usage.items():
                 if v is not None:
                     lines.append(f"- {k}: {v:,}")
-            cost = self._session_cumulative_cost.get(session_id, 0.0)
-            lines.append(f"\n**Cumulative cost:** ${cost:.6f} USD")
+            lines.append(f"\n**Cumulative cost:** ${session.cumulative_cost:.6f} USD")
             return "\n".join(lines)
 
         if name == "model":
@@ -1489,7 +1520,7 @@ class EchoAgent(Agent):
                     config_id="model", session_id=session_id, value=arg
                 )
                 return f"Switched to **{arg}**."
-            current = self._sessions[session_id].model
+            current = session.state.model
             models = "\n".join(
                 f"- {'**' if m.model_id == current else ''}`{m.model_id}`{'**' if m.model_id == current else ''} — {m.name}"
                 for m in _AVAILABLE_MODELS
@@ -1506,7 +1537,7 @@ class EchoAgent(Agent):
                     config_id="thinking_level", session_id=session_id, value=arg
                 )
                 return f"Thinking set to **{arg}**."
-            current = self._sessions[session_id].thinking_level
+            current = session.state.thinking_level
             return f"Current: **{current}**\nAvailable: {', '.join(_THINKING_LEVELS)}"
 
         if name == "context":
@@ -1514,17 +1545,17 @@ class EchoAgent(Agent):
                 if arg not in _CONTEXT_PRESETS:
                     return f"Unknown level `{arg}`. Available: {', '.join(_CONTEXT_PRESETS)}"
                 if self._is_intellij:
-                    self._sessions[session_id].context_level = arg
+                    session.state.context_level = arg
                     await self._rebuild_agent(
                         session_id,
-                        conversation_id=getattr(self._agent, "conversation_id", None),
+                        conversation_id=getattr(session.agent, "conversation_id", None),
                     )
                 else:
                     await self.set_config_option(
                         config_id="context", session_id=session_id, value=arg
                     )
                 return f"Context set to **{arg}** ({_CONTEXT_PRESETS[arg]:,} tokens)."
-            current = self._sessions[session_id].context_level
+            current = session.state.context_level
             levels = ", ".join(
                 f"**{k}** ({v:,})" if k == current else f"{k} ({v:,})"
                 for k, v in _CONTEXT_PRESETS.items()
@@ -1613,16 +1644,18 @@ class EchoAgent(Agent):
             )
             return PromptResponse(user_message_id=message_id, stop_reason="end_turn")
 
-        if self._sessions[session_id].mode == "plan":
+        session = self._get_session(session_id)
+
+        if session.state.mode == "plan":
             parts.append(
                 "\n[PLAN MODE: Produce a step-by-step plan. Do not execute any tools.]"
             )
 
-        if not self._sessions[session_id].title:
+        if not session.state.title:
             first_text = next((p for p in parts if isinstance(p, str)), None)
             if first_text:
                 title = first_text[:80].split("\n")[0]
-                self._sessions[session_id].title = title
+                session.state.title = title
                 await self._conn.session_update(
                     session_id=session_id,
                     update=SessionInfoUpdate(
@@ -1643,7 +1676,7 @@ class EchoAgent(Agent):
         self._active_session_id = session_id
         token = current_session_id.set(session_id)
         try:
-            response = await self._agent.chat(parts)
+            response = await session.agent.chat(parts)
             async for chunk in response.chunks:
                 match chunk:
                     case agy.types.Thought(text=t):
@@ -1672,7 +1705,8 @@ class EchoAgent(Agent):
             log.debug("prompt cancelled for session %s", session_id)
             if response is not None and hasattr(response, "cancel"):
                 await response.cancel()
-            terminal_id = self._last_terminal_ids.pop(session_id, None)
+            terminal_id = session.last_terminal_id
+            session.last_terminal_id = None
             if terminal_id:
                 try:
                     await self._conn.release_terminal(
@@ -1707,7 +1741,7 @@ class EchoAgent(Agent):
                         thought_tokens=meta.thoughts_token_count,
                         cached_read_tokens=meta.cached_content_token_count,
                     )
-                    self._last_usage[session_id] = {
+                    session.last_usage = {
                         "input_tokens": meta.prompt_token_count or 0,
                         "output_tokens": meta.candidates_token_count or 0,
                         "thought_tokens": meta.thoughts_token_count,
@@ -1715,7 +1749,7 @@ class EchoAgent(Agent):
                         "total_tokens": meta.total_token_count or 0,
                     }
                     used = meta.total_token_count or 0
-                    model_id = self._sessions[session_id].model
+                    model_id = session.state.model
                     rates = _get_token_rates(model_id, meta.prompt_token_count or 0)
                     cost = None
                     if rates:
@@ -1724,12 +1758,8 @@ class EchoAgent(Agent):
                             (meta.prompt_token_count or 0) * in_rate
                             + (meta.candidates_token_count or 0) * out_rate
                         ) / 1_000_000
-                        cumulative = (
-                            self._session_cumulative_cost.get(session_id, 0.0)
-                            + turn_cost
-                        )
-                        self._session_cumulative_cost[session_id] = cumulative
-                        cost = Cost(amount=round(cumulative, 6), currency="USD")
+                        session.cumulative_cost += turn_cost
+                        cost = Cost(amount=round(session.cumulative_cost, 6), currency="USD")
                     await self._conn.session_update(
                         session_id=session_id,
                         update=UsageUpdate(
@@ -1742,9 +1772,8 @@ class EchoAgent(Agent):
         except Exception:
             log.debug("usage extraction failed", exc_info=True)
 
-        s = self._sessions[session_id]
-        s.conversation_id = getattr(self._agent, "conversation_id", None)
-        s.cwd = getattr(self, "_cwd", ".")
+        s = session.state
+        s.conversation_id = getattr(session.agent, "conversation_id", None)
         s.updated_at = datetime.now(timezone.utc).isoformat()
         self._store.save(session_id, s)
 
