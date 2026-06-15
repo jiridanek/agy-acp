@@ -1120,20 +1120,14 @@ class EchoAgent(Agent):
             config_options=self._build_config_options(new_id),
         )
 
-    async def resume_session(
+    async def _restore_session(
         self,
+        stored: SessionState,
         cwd: str,
         session_id: str,
-        additional_directories: list[str] | None = None,
-        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
-        **kwargs: Any,
-    ) -> ResumeSessionResponse:
-        log.debug("resume_session %s", session_id)
-        stored = self._store.load(session_id)
-        if not stored:
-            raise ValueError(f"Session not found: {session_id}")
-
-
+        additional_directories: list[str] | None,
+        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None,
+    ) -> Session:
         stored.cwd = cwd
         conv_id = _check_trajectory(stored.conversation_id)
         if not conv_id:
@@ -1146,14 +1140,26 @@ class EchoAgent(Agent):
         config = self._build_agent_config(session, conversation_id=conv_id)
         await session.start_agent(self._agent_t, config, self._hooks())
         self._sessions[session_id] = session
-
         if conv_id:
-            log.debug("resuming conversation %s", conv_id)
-
+            log.debug("restoring conversation %s for session %s", conv_id, session_id)
         asyncio.ensure_future(self._send_available_commands(session_id))
+        return session
 
+    async def resume_session(
+        self,
+        cwd: str,
+        session_id: str,
+        additional_directories: list[str] | None = None,
+        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
+        **kwargs: Any,
+    ) -> ResumeSessionResponse:
+        log.debug("resume_session %s", session_id)
+        stored = self._store.load(session_id)
+        if not stored:
+            raise ValueError(f"Session not found: {session_id}")
+        session = await self._restore_session(stored, cwd, session_id, additional_directories, mcp_servers)
         return ResumeSessionResponse(
-            modes=_build_mode_state(stored.mode),
+            modes=_build_mode_state(session.state.mode),
             models=self._build_model_state(session_id),
             config_options=self._build_config_options(session_id),
         )
@@ -1186,31 +1192,13 @@ class EchoAgent(Agent):
         mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
         **kwargs: Any,
     ) -> LoadSessionResponse | None:
+        log.debug("load_session %s", session_id)
         stored = self._store.load(session_id)
         if not stored:
             return None
-
-
-        stored.cwd = cwd
-        conv_id = _check_trajectory(stored.conversation_id)
-        if not conv_id:
-            stored.conversation_id = None
-        session = Session(
-            state=stored,
-            additional_dirs=additional_directories or [],
-            mcp_servers_raw=list(mcp_servers) if mcp_servers else [],
-        )
-        config = self._build_agent_config(session, conversation_id=conv_id)
-        await session.start_agent(self._agent_t, config, self._hooks())
-        self._sessions[session_id] = session
-
-        if conv_id:
-            log.debug("restoring conversation %s for session %s", conv_id, session_id)
-
-        asyncio.ensure_future(self._send_available_commands(session_id))
-
+        session = await self._restore_session(stored, cwd, session_id, additional_directories, mcp_servers)
         return LoadSessionResponse(
-            modes=_build_mode_state(stored.mode),
+            modes=_build_mode_state(session.state.mode),
             models=self._build_model_state(session_id),
             config_options=self._build_config_options(session_id),
         )
