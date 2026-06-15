@@ -2038,9 +2038,14 @@ async def test_offline_clear_is_reset_alias():
     assert sut._sessions[sid].state.title is None
 
 
-async def test_offline_load_session_rebuilds_with_conversation_id(tmp_path):
+async def test_offline_load_session_rebuilds_with_conversation_id(tmp_path, monkeypatch):
     """load_session rebuilds the agent with saved conversation_id."""
     import hellp
+
+    traj_dir = tmp_path / "trajectories"
+    traj_dir.mkdir()
+    (traj_dir / "traj-conv-xyz").write_text("{}")
+    monkeypatch.setattr(hellp, "_DEFAULT_SAVE_DIR", str(traj_dir))
 
     store = hellp.SessionStore(path=tmp_path / "sessions.json")
     store.save(
@@ -2198,9 +2203,14 @@ async def test_offline_agent_info_declared():
     assert resp.agent_info.title == "Antigravity ACP Adapter"
 
 
-async def test_offline_resume_session(tmp_path):
+async def test_offline_resume_session(tmp_path, monkeypatch):
     """resume_session restores mode, model, thinking level, and rebuilds agent with conversation_id."""
     import hellp
+
+    traj_dir = tmp_path / "trajectories"
+    traj_dir.mkdir()
+    (traj_dir / "traj-conv-abc-123").write_text("{}")
+    monkeypatch.setattr(hellp, "_DEFAULT_SAVE_DIR", str(traj_dir))
 
     store = hellp.SessionStore(path=tmp_path / "sessions.json")
     chunks = [agy_types.Text(step_index=0, text="hello")]
@@ -2400,6 +2410,8 @@ async def test_live_run():
             await conn.initialize(protocol_version=PROTOCOL_VERSION)
         except Exception as e:
             print("initialize failed:", e, e.data if hasattr(e, "data") else "")
+            print("subprocess returncode:", _proc.returncode)
+            raise
 
         session = await conn.new_session(cwd=str(script.parent), mcp_servers=[])
 

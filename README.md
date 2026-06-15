@@ -221,16 +221,27 @@ python -m pytest hellp_test.py
 `EchoAgent` extends `acp.Agent` and wraps `google.antigravity.Agent`:
 
 ```
-IDE (IntelliJ) <--ACP JSON-RPC--> EchoAgent <---> Antigravity SDK <---> Gemini API
-                                      |
-                                      +-- view_file/create_file/edit_file --> IDE RPCs
-                                      +-- run_command --> IDE terminal (if supported)
-                                      +-- PreToolCallDecideHook --> permission broker
+IDE (IntelliJ/Zed) <--ACP JSON-RPC--> EchoAgent <---> Session ──> Antigravity Agent ──> Gemini API
+                                           |              |
+                                           |              +-- Go harness (subprocess, 1 per session)
+                                           |              +-- trajectory file (conversation state)
+                                           |
+                                           +-- view_file/create_file/edit_file --> IDE RPCs
+                                           +-- run_command --> IDE terminal (if supported)
+                                           +-- PreToolCallDecideHook --> permission broker
 ```
+
+Each ACP session owns its own `Session` object containing an Antigravity `Agent` instance with its own Go harness subprocess. Sessions are isolated — closing one doesn't affect others, and concurrent sessions don't interfere.
 
 - **File I/O** is routed through IDE RPCs (`read_text_file`, `write_text_file`) when the client supports it, otherwise falls back to the SDK's built-in tools.
 - **Command execution** goes through the IDE terminal when `client_capabilities.terminal=True`, otherwise the SDK's native `run_command` handles it.
 - **Permission gating** is mode-dependent: read-only tools always auto-allow; file writes and command execution behavior depends on the active mode (see below).
+
+### Session persistence
+
+Conversation history is saved as trajectory files in `~/.agy-acp/trajectories/` by the Go harness during graceful shutdown. On session resume (`load_session` / `resume_session`), the agent checks if the trajectory file exists and resumes from it. If the file is missing (e.g., process was killed without cleanup), the session starts fresh.
+
+**Known limitation:** Zed sends `SIGKILL` to agent processes on disconnect ([zed#59323](https://github.com/zed-industries/zed/issues/59323)), bypassing all cleanup. Trajectories are never saved, so session resume always starts fresh in Zed. The SDK also lacks a mid-session save API ([SDK#68](https://github.com/google-antigravity/antigravity-sdk-python/issues/68)). IntelliJ handles this correctly by closing stdin, allowing graceful shutdown.
 
 ## Features
 

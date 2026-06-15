@@ -140,6 +140,23 @@ current_session_id = ContextVar("current_session_id")
 _DEFAULT_STORE_PATH = Path.home() / ".agy-acp" / "sessions.json"
 _DEFAULT_SAVE_DIR = str(Path.home() / ".agy-acp" / "trajectories")
 
+
+def _ensure_dir(path: str) -> str:
+    Path(path).mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _check_trajectory(conversation_id: str | None) -> str | None:
+    """Return conversation_id only if its trajectory file exists on disk."""
+    if not conversation_id:
+        return None
+    traj_path = Path(_DEFAULT_SAVE_DIR) / f"traj-{conversation_id}"
+    if traj_path.exists():
+        return conversation_id
+    log.warning("trajectory %s not found, starting fresh", conversation_id)
+    return None
+
+
 _AVAILABLE_MODELS = [
     ModelInfo(model_id="gemini-3.5-flash", name="Gemini 3.5 Flash"),
     ModelInfo(model_id="gemini-3.1-pro-preview", name="Gemini 3.1 Pro"),
@@ -1006,7 +1023,7 @@ class EchoAgent(Agent):
                 ),
             ),
             conversation_id=conversation_id,
-            save_dir=save_dir or _DEFAULT_SAVE_DIR,
+            save_dir=_ensure_dir(save_dir or _DEFAULT_SAVE_DIR),
             workspaces=[cwd] + session.additional_dirs,
             mcp_servers=_convert_mcp_servers(session.mcp_servers_raw or None),
             skills_paths=_skills_paths(cwd)
@@ -1122,12 +1139,14 @@ class EchoAgent(Agent):
 
 
         stored.cwd = cwd
+        conv_id = _check_trajectory(stored.conversation_id)
+        if not conv_id:
+            stored.conversation_id = None
         session = Session(
             state=stored,
             additional_dirs=additional_directories or [],
             mcp_servers_raw=list(mcp_servers) if mcp_servers else [],
         )
-        conv_id = stored.conversation_id
         config = self._build_agent_config(session, conversation_id=conv_id)
         await session.start_agent(self._agent_t, config, self._hooks())
         self._sessions[session_id] = session
@@ -1177,12 +1196,14 @@ class EchoAgent(Agent):
 
 
         stored.cwd = cwd
+        conv_id = _check_trajectory(stored.conversation_id)
+        if not conv_id:
+            stored.conversation_id = None
         session = Session(
             state=stored,
             additional_dirs=additional_directories or [],
             mcp_servers_raw=list(mcp_servers) if mcp_servers else [],
         )
-        conv_id = stored.conversation_id
         config = self._build_agent_config(session, conversation_id=conv_id)
         await session.start_agent(self._agent_t, config, self._hooks())
         self._sessions[session_id] = session
@@ -1789,10 +1810,19 @@ async def main() -> None:
     # use_unstable_protocol enables session/set_model and session/close RPCs
     # which are registered as unstable in the ACP SDK router.
     # The stable path for model switching is session/set_config_option with id="model".
-    await run_agent(
-        EchoAgent(agent_config_t=agy.LocalAgentConfig, agent_t=agy.Agent),
-        use_unstable_protocol=True,
-    )
+    agent = EchoAgent(agent_config_t=agy.LocalAgentConfig, agent_t=agy.Agent)
+    log.info("run_agent starting (pid=%d)", os.getpid())
+    try:
+        await run_agent(agent, use_unstable_protocol=True)
+        log.info("run_agent returned normally")
+    except Exception:
+        log.exception("run_agent raised")
+    finally:
+        for sid in list(agent._sessions):
+            try:
+                await agent.close_session(session_id=sid)
+            except Exception:
+                log.debug("cleanup: failed to close session %s", sid)
 
 
 if __name__ == "__main__":
