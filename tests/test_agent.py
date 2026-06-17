@@ -17,6 +17,13 @@ from acp.schema import (
     TextContentBlock,
 )
 
+from agy_acp.agent import EchoAgent
+from agy_acp.hooks import MyPreToolCallDecideHook, MyPostToolCallHook
+from agy_acp.mcp import _convert_mcp_server, _convert_mcp_servers
+from agy_acp.session import SessionState, SessionStore, current_session_id
+from agy_acp.skills import _discover_skills, _skills_paths
+from agy_acp.tool_ui import _permission_description, _tool_title
+
 _TEST_CLIENT_CAPS = ClientCapabilities(
     fs=FileSystemCapabilities(read_text_file=True, write_text_file=True),
     terminal=True,
@@ -90,7 +97,7 @@ class FakeAgent:
 
 def test_tool_title_command_line():
     """_tool_title extracts command_line (SDK built-in run_command key)."""
-    from hellp import _tool_title
+
 
     assert (
         _tool_title(
@@ -102,14 +109,14 @@ def test_tool_title_command_line():
 
 def test_tool_title_command():
     """_tool_title extracts command (our custom closure key)."""
-    from hellp import _tool_title
+
 
     assert _tool_title("run_command", {"command": "ls -la"}) == "run_command: ls -la"
 
 
 def test_tool_title_mcp():
     """_tool_title extracts ServerName/ToolName from MCP request_text."""
-    from hellp import _tool_title
+
 
     args = {
         "request_text": "Requesting permission with args "
@@ -121,7 +128,7 @@ def test_tool_title_mcp():
 
 def test_permission_description_run_command():
     """_permission_description shows working dir for run_command (command is in title)."""
-    from hellp import _permission_description
+
 
     desc = _permission_description(
         "run_command", {"command_line": "git status", "working_dir": "/project"}
@@ -131,7 +138,7 @@ def test_permission_description_run_command():
 
 def test_permission_description_mcp_tool_with_args():
     """_permission_description shows MCP tool arguments."""
-    from hellp import _permission_description
+
 
     args = {
         "request_text": "Requesting permission with args "
@@ -145,7 +152,7 @@ def test_permission_description_mcp_tool_with_args():
 
 def test_permission_description_mcp_tool_no_args():
     """_permission_description shows 'no arguments' for argless MCP tools."""
-    from hellp import _permission_description
+
 
     args = {
         "request_text": "Requesting permission with args "
@@ -157,7 +164,7 @@ def test_permission_description_mcp_tool_no_args():
 
 def test_permission_description_generic():
     """_permission_description lists args as markdown for unknown tools."""
-    from hellp import _permission_description
+
 
     desc = _permission_description("some_tool", {"foo": "bar"})
     assert "**foo**" in desc
@@ -171,7 +178,7 @@ class FakeConfig:
 
 async def test_offline_prompt_text():
     """Text prompt without an LLM — uses FakeAgent with canned response."""
-    import hellp
+
 
     chunks = [
         agy.types.Thought(step_index=0, text="let me think"),
@@ -180,7 +187,7 @@ async def test_offline_prompt_text():
     ]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -209,7 +216,7 @@ async def test_offline_prompt_text():
 
 async def test_offline_prompt_with_tool_calls():
     """ToolCalls in the stream are passed through (hooks handle start/complete in real agent)."""
-    import hellp
+
 
     chunks = [
         agy.types.ToolCall(id="tc1", name="read_file", args={"path": "foo.py"}),
@@ -217,7 +224,7 @@ async def test_offline_prompt_with_tool_calls():
     ]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -243,10 +250,10 @@ async def test_offline_tool_execution_populates_edit_state():
     """Tool functions populate _last_file_edits so PostToolCallHook can send rich diffs."""
     from acp.schema import ReadTextFileResponse
 
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = AsyncMock(spec=Client)
@@ -268,10 +275,10 @@ async def test_offline_edit_file_not_found():
     """edit_file returns error when old_string is not in the file."""
     from acp.schema import ReadTextFileResponse
 
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = AsyncMock(spec=Client)
@@ -289,10 +296,10 @@ async def test_offline_tool_works_without_contextvar():
     """Tool functions must work even when ContextVar is not set (SDK dispatches on background tasks)."""
     from acp.schema import ReadTextFileResponse
 
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = AsyncMock(spec=Client)
@@ -311,9 +318,9 @@ async def test_offline_tool_works_without_contextvar():
 async def test_offline_hook_tool_tracking():
     """Verify PreToolCallDecideHook + PostToolCallHook send start and completed updates.
     File tools (view_file) auto-allow without requesting permission."""
-    import hellp
 
-    sut = hellp.EchoAgent(
+
+    sut = EchoAgent(
         agent_t=lambda cfg: FakeAgent(config=None, responses=[]),
         agent_config_t=FakeConfig,
     )
@@ -324,7 +331,7 @@ async def test_offline_hook_tool_tracking():
     session = await sut.new_session(cwd=".")
     sid = session.session_id
 
-    token = hellp.current_session_id.set(sid)
+    token = current_session_id.set(sid)
     try:
         from google.antigravity.hooks.hooks import (
             OperationContext,
@@ -335,15 +342,15 @@ async def test_offline_hook_tool_tracking():
         op_ctx = OperationContext(TurnContext(SessionContext()))
 
         tc = agy.types.ToolCall(id="tc1", name="view_file", args={"path": "hello.py"})
-        pre_hook = hellp.MyPreToolCallDecideHook(sut)
+        pre_hook = MyPreToolCallDecideHook(sut)
         result = await pre_hook.run(op_ctx, tc)
         assert result.allow is True
 
-        post_hook = hellp.MyPostToolCallHook(sut)
+        post_hook = MyPostToolCallHook(sut)
         tr = agy.types.ToolResult(id="tc1", name="view_file", result="file contents")
         await post_hook.run(op_ctx, tr)
     finally:
-        hellp.current_session_id.reset(token)
+        current_session_id.reset(token)
 
     # File tools should NOT trigger permission request
     client.request_permission.assert_not_called()
@@ -363,9 +370,9 @@ async def test_offline_hook_tool_tracking():
 
 async def test_offline_hook_run_command_requires_permission():
     """run_command tool calls require IDE permission approval."""
-    import hellp
 
-    sut = hellp.EchoAgent(
+
+    sut = EchoAgent(
         agent_t=lambda cfg: FakeAgent(config=None, responses=[]),
         agent_config_t=FakeConfig,
     )
@@ -379,7 +386,7 @@ async def test_offline_hook_run_command_requires_permission():
     session = await sut.new_session(cwd=".")
     sid = session.session_id
 
-    token = hellp.current_session_id.set(sid)
+    token = current_session_id.set(sid)
     try:
         from google.antigravity.hooks.hooks import (
             OperationContext,
@@ -390,20 +397,20 @@ async def test_offline_hook_run_command_requires_permission():
         op_ctx = OperationContext(TurnContext(SessionContext()))
 
         tc = agy.types.ToolCall(id="tc2", name="run_command", args={"command": "ls"})
-        pre_hook = hellp.MyPreToolCallDecideHook(sut)
+        pre_hook = MyPreToolCallDecideHook(sut)
         result = await pre_hook.run(op_ctx, tc)
         assert result.allow is True
     finally:
-        hellp.current_session_id.reset(token)
+        current_session_id.reset(token)
 
     client.request_permission.assert_called_once()
 
 
 async def test_offline_hook_run_command_denied():
     """Denied run_command returns clear message without sending a start notification."""
-    import hellp
 
-    sut = hellp.EchoAgent(
+
+    sut = EchoAgent(
         agent_t=lambda cfg: FakeAgent(config=None, responses=[]),
         agent_config_t=FakeConfig,
     )
@@ -417,7 +424,7 @@ async def test_offline_hook_run_command_denied():
     session = await sut.new_session(cwd=".")
     sid = session.session_id
 
-    token = hellp.current_session_id.set(sid)
+    token = current_session_id.set(sid)
     try:
         from google.antigravity.hooks.hooks import (
             OperationContext,
@@ -430,12 +437,12 @@ async def test_offline_hook_run_command_denied():
         tc = agy.types.ToolCall(
             id="tc3", name="run_command", args={"command": "rm -rf /"}
         )
-        pre_hook = hellp.MyPreToolCallDecideHook(sut)
+        pre_hook = MyPreToolCallDecideHook(sut)
         result = await pre_hook.run(op_ctx, tc)
         assert result.allow is False
         assert "declined" in result.message
     finally:
-        hellp.current_session_id.reset(token)
+        current_session_id.reset(token)
 
     # Denied tools should NOT send a tool_call start notification (avoids duplicate cards)
     updates = [
@@ -448,9 +455,9 @@ async def test_offline_hook_run_command_denied():
 
 async def test_offline_hook_mcp_tool_requires_permission():
     """MCP server tools (e.g. mcp_idea_execute_tool) require permission — whitelist only allows known file tools."""
-    import hellp
 
-    sut = hellp.EchoAgent(
+
+    sut = EchoAgent(
         agent_t=lambda cfg: FakeAgent(config=None, responses=[]),
         agent_config_t=FakeConfig,
     )
@@ -464,7 +471,7 @@ async def test_offline_hook_mcp_tool_requires_permission():
     session = await sut.new_session(cwd=".")
     sid = session.session_id
 
-    token = hellp.current_session_id.set(sid)
+    token = current_session_id.set(sid)
     try:
         from google.antigravity.hooks.hooks import (
             OperationContext,
@@ -477,20 +484,20 @@ async def test_offline_hook_mcp_tool_requires_permission():
         tc = agy.types.ToolCall(
             id="tc-mcp", name="mcp_idea_execute_tool", args={"command": "echo hi"}
         )
-        pre_hook = hellp.MyPreToolCallDecideHook(sut)
+        pre_hook = MyPreToolCallDecideHook(sut)
         result = await pre_hook.run(op_ctx, tc)
         assert result.allow is True
     finally:
-        hellp.current_session_id.reset(token)
+        current_session_id.reset(token)
 
     client.request_permission.assert_called_once()
 
 
 async def test_offline_hook_sdk_builtin_tools_auto_allow():
     """SDK built-in tools like ask_question and finish auto-allow without permission."""
-    import hellp
 
-    sut = hellp.EchoAgent(
+
+    sut = EchoAgent(
         agent_t=lambda cfg: FakeAgent(config=None, responses=[]),
         agent_config_t=FakeConfig,
     )
@@ -501,7 +508,7 @@ async def test_offline_hook_sdk_builtin_tools_auto_allow():
     session = await sut.new_session(cwd=".")
     sid = session.session_id
 
-    token = hellp.current_session_id.set(sid)
+    token = current_session_id.set(sid)
     try:
         from google.antigravity.hooks.hooks import (
             OperationContext,
@@ -509,7 +516,7 @@ async def test_offline_hook_sdk_builtin_tools_auto_allow():
             TurnContext,
         )
 
-        pre_hook = hellp.MyPreToolCallDecideHook(sut)
+        pre_hook = MyPreToolCallDecideHook(sut)
 
         for tool_name in ("ask_question", "finish", "start_subagent", "generate_image"):
             op_ctx = OperationContext(TurnContext(SessionContext()))
@@ -517,17 +524,17 @@ async def test_offline_hook_sdk_builtin_tools_auto_allow():
             result = await pre_hook.run(op_ctx, tc)
             assert result.allow is True, f"{tool_name} should auto-allow"
     finally:
-        hellp.current_session_id.reset(token)
+        current_session_id.reset(token)
 
     client.request_permission.assert_not_called()
 
 
 async def test_offline_tool_without_session_context():
     """Tool functions should return an error string, not crash, when no session context is set."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -539,10 +546,10 @@ async def test_offline_tool_without_session_context():
 
 async def test_offline_close_session_cleans_state():
     """close_session should clear per-session state dicts."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -562,11 +569,11 @@ async def test_offline_close_session_cleans_state():
 
 async def test_offline_empty_prompt_returns_early():
     """Prompt with no convertible content should return without calling chat()."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
 
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -586,7 +593,7 @@ async def test_offline_custom_tools_disabled_and_registered():
     """Verify built-in tools are disabled, custom tools are registered, and policies=[allow_all()]."""
     from google.antigravity.types import BuiltinTools
 
-    import hellp
+
 
     configs_passed = []
 
@@ -596,7 +603,7 @@ async def test_offline_custom_tools_disabled_and_registered():
         return cfg
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=spy_config)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=spy_config)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
     sut.on_connect(conn=MagicMock(spec=Client))
     await sut.new_session(cwd=".")
@@ -630,7 +637,7 @@ async def test_offline_no_terminal_leaves_builtin_run_command():
     """When client has terminal=False, SDK's built-in run_command stays enabled."""
     from google.antigravity.types import BuiltinTools
 
-    import hellp
+
 
     no_terminal_caps = ClientCapabilities(
         fs=FileSystemCapabilities(read_text_file=True, write_text_file=True),
@@ -645,7 +652,7 @@ async def test_offline_no_terminal_leaves_builtin_run_command():
         return cfg
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=spy_config)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=spy_config)
     await sut.initialize(protocol_version=1, client_capabilities=no_terminal_caps)
     sut.on_connect(conn=MagicMock(spec=Client))
     await sut.new_session(cwd=".")
@@ -666,7 +673,7 @@ async def test_offline_no_terminal_leaves_builtin_run_command():
 
 async def test_offline_plan_updates_numbered_lists():
     """Verify numbered lists like '2. item' are parsed as plan entries."""
-    import hellp
+
 
     chunks = [
         agy.types.Thought(step_index=0, text="Steps:\n1. First\n2. Second\n3. Third"),
@@ -674,7 +681,7 @@ async def test_offline_plan_updates_numbered_lists():
     ]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = AsyncMock(spec=Client)
@@ -702,7 +709,7 @@ async def test_offline_plan_updates_numbered_lists():
 
 async def test_offline_plan_updates():
     """Verify markdown checklists/todos in Thought chunks are emitted as AgentPlanUpdate."""
-    import hellp
+
 
     chunks = [
         agy.types.Thought(
@@ -713,7 +720,7 @@ async def test_offline_plan_updates():
     ]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = AsyncMock(spec=Client)
@@ -745,7 +752,7 @@ async def test_offline_plan_updates():
 
 async def test_offline_rich_tool_outputs():
     """Verify tool call progress includes rich diff details for file edits and terminal refs."""
-    import hellp
+
 
     # Simulating a file edit and a run_command
     chunks = [
@@ -760,7 +767,7 @@ async def test_offline_rich_tool_outputs():
     ]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = AsyncMock(spec=Client)
@@ -833,9 +840,9 @@ async def test_offline_rich_tool_outputs():
 
 async def test_offline_nonzero_exit_code_marks_failed():
     """Non-zero exit code from run_command sets tool call status to 'failed'."""
-    import hellp
 
-    sut = hellp.EchoAgent(
+
+    sut = EchoAgent(
         agent_t=lambda cfg: FakeAgent(config=None, responses=[]),
         agent_config_t=FakeConfig,
     )
@@ -853,7 +860,7 @@ async def test_offline_nonzero_exit_code_marks_failed():
     # Register a tracker entry for the tool call
     sut._tracker.start("tc-fail", title="run_command: false", kind="execute")
 
-    token = hellp.current_session_id.set(sid)
+    token = current_session_id.set(sid)
     try:
         from google.antigravity.hooks.hooks import (
             OperationContext,
@@ -864,11 +871,11 @@ async def test_offline_nonzero_exit_code_marks_failed():
         op_ctx = OperationContext(TurnContext(SessionContext()))
         op_ctx.set("acp_tc_id", "tc-fail")
 
-        post_hook = hellp.MyPostToolCallHook(sut)
+        post_hook = MyPostToolCallHook(sut)
         tr = agy.types.ToolResult(id="tc-fail", name="run_command", result="")
         await post_hook.run(op_ctx, tr)
     finally:
-        hellp.current_session_id.reset(token)
+        current_session_id.reset(token)
 
     updates = [
         call.kwargs.get("update") or call.args[1]
@@ -882,7 +889,7 @@ async def test_offline_nonzero_exit_code_marks_failed():
 
 async def test_offline_session_modes():
     """Verify session modes are declared and set_session_mode works."""
-    import hellp
+
 
     fake_agent = FakeAgent(
         config=None,
@@ -890,7 +897,7 @@ async def test_offline_session_modes():
             [agy.types.Text(step_index=0, text="plan step 1")],
         ],
     )
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -924,9 +931,9 @@ async def test_offline_session_modes():
 
 async def _make_hook_sut():
     """Create a ready-to-use (sut, sid, pre_hook) tuple for mode tests."""
-    import hellp
 
-    sut = hellp.EchoAgent(
+
+    sut = EchoAgent(
         agent_t=lambda cfg: FakeAgent(config=None, responses=[]),
         agent_config_t=FakeConfig,
     )
@@ -938,7 +945,7 @@ async def _make_hook_sut():
     sut.on_connect(conn=client)
     session = await sut.new_session(cwd=".")
     sid = session.session_id
-    pre_hook = hellp.MyPreToolCallDecideHook(sut)
+    pre_hook = MyPreToolCallDecideHook(sut)
     return sut, sid, pre_hook, client
 
 
@@ -957,57 +964,57 @@ async def _run_hook(pre_hook, tool_name, args=None):
 
 async def test_mode_agent_prompts_for_file_writes():
     """In agent mode, create_file and edit_file trigger permission prompt."""
-    import hellp
+
 
     sut, sid, hook, client = await _make_hook_sut()
-    token = hellp.current_session_id.set(sid)
+    token = current_session_id.set(sid)
     try:
         for tool in ("create_file", "edit_file"):
             result = await _run_hook(hook, tool, {"path": "/tmp/x"})
             assert result.allow is True, f"{tool} should be allowed after approval"
         assert client.request_permission.call_count == 2
     finally:
-        hellp.current_session_id.reset(token)
+        current_session_id.reset(token)
 
 
 async def test_mode_accept_edits_allows_file_writes():
     """In accept_edits mode, file writes auto-allow without prompting."""
-    import hellp
+
 
     sut, sid, hook, client = await _make_hook_sut()
     sut._sessions[sid].state.mode = "accept_edits"
-    token = hellp.current_session_id.set(sid)
+    token = current_session_id.set(sid)
     try:
         for tool in ("create_file", "edit_file"):
             result = await _run_hook(hook, tool, {"path": "/tmp/x"})
             assert result.allow is True, f"{tool} should auto-allow in accept_edits"
         client.request_permission.assert_not_called()
     finally:
-        hellp.current_session_id.reset(token)
+        current_session_id.reset(token)
 
 
 async def test_mode_plan_denies_file_writes():
     """In plan mode, file write tools are denied."""
-    import hellp
+
 
     sut, sid, hook, _ = await _make_hook_sut()
     sut._sessions[sid].state.mode = "plan"
-    token = hellp.current_session_id.set(sid)
+    token = current_session_id.set(sid)
     try:
         for tool in ("create_file", "edit_file"):
             result = await _run_hook(hook, tool, {"path": "/tmp/x"})
             assert result.allow is False, f"{tool} should be denied in plan mode"
     finally:
-        hellp.current_session_id.reset(token)
+        current_session_id.reset(token)
 
 
 async def test_mode_plan_allows_reads_and_prompts_commands():
     """In plan mode, read tools auto-allow and run_command prompts via broker."""
-    import hellp
+
 
     sut, sid, hook, client = await _make_hook_sut()
     sut._sessions[sid].state.mode = "plan"
-    token = hellp.current_session_id.set(sid)
+    token = current_session_id.set(sid)
     try:
         result = await _run_hook(hook, "view_file", {"path": "/tmp/x"})
         assert result.allow is True, "view_file should auto-allow in plan mode"
@@ -1017,16 +1024,16 @@ async def test_mode_plan_allows_reads_and_prompts_commands():
         assert result.allow is True, "run_command should prompt and allow in plan mode"
         assert client.request_permission.call_count == 1
     finally:
-        hellp.current_session_id.reset(token)
+        current_session_id.reset(token)
 
 
 async def test_mode_dont_ask_denies_non_safe():
     """In dont_ask mode, non-safe tools are denied without prompting."""
-    import hellp
+
 
     sut, sid, hook, client = await _make_hook_sut()
     sut._sessions[sid].state.mode = "dont_ask"
-    token = hellp.current_session_id.set(sid)
+    token = current_session_id.set(sid)
     try:
         result = await _run_hook(hook, "view_file", {"path": "/tmp/x"})
         assert result.allow is True, "view_file should auto-allow"
@@ -1035,31 +1042,31 @@ async def test_mode_dont_ask_denies_non_safe():
             assert result.allow is False, f"{tool} should be denied in dont_ask"
         client.request_permission.assert_not_called()
     finally:
-        hellp.current_session_id.reset(token)
+        current_session_id.reset(token)
 
 
 async def test_mode_bypass_allows_everything():
     """In bypass mode, all tools auto-allow without prompting."""
-    import hellp
+
 
     sut, sid, hook, client = await _make_hook_sut()
     sut._sessions[sid].state.mode = "bypass"
-    token = hellp.current_session_id.set(sid)
+    token = current_session_id.set(sid)
     try:
         for tool in ("create_file", "edit_file", "run_command", "view_file"):
             result = await _run_hook(hook, tool)
             assert result.allow is True, f"{tool} should auto-allow in bypass"
         client.request_permission.assert_not_called()
     finally:
-        hellp.current_session_id.reset(token)
+        current_session_id.reset(token)
 
 
 async def test_offline_config_option_model():
     """set_config_option with config_id='model' updates the session model."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1092,13 +1099,13 @@ async def test_offline_config_option_model():
 
 async def test_offline_session_persistence(tmp_path):
     """new_session → prompt → list_sessions finds it → close_session → list_sessions doesn't."""
-    import hellp
 
-    store = hellp.SessionStore(path=tmp_path / "sessions.json")
+
+    store = SessionStore(path=tmp_path / "sessions.json")
     chunks = [agy.types.Text(step_index=0, text="hi")]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
-    sut = hellp.EchoAgent(
+    sut = EchoAgent(
         agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store
     )
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
@@ -1131,15 +1138,15 @@ async def test_offline_session_persistence(tmp_path):
 
 async def test_offline_load_session(tmp_path):
     """load_session restores mode and config from a previously saved session."""
-    import hellp
 
-    store = hellp.SessionStore(path=tmp_path / "sessions.json")
+
+    store = SessionStore(path=tmp_path / "sessions.json")
     chunks = [agy.types.Text(step_index=0, text="response")]
     fake_agent = FakeAgent(
         config=None, responses=[chunks, [agy.types.Text(step_index=0, text="resumed")]]
     )
 
-    sut = hellp.EchoAgent(
+    sut = EchoAgent(
         agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store
     )
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
@@ -1164,12 +1171,12 @@ async def test_offline_load_session(tmp_path):
 
 async def test_offline_usage_tracking():
     """Verify usage metadata from the response is included in PromptResponse."""
-    import hellp
+
 
     chunks = [agy.types.Text(step_index=0, text="Hi")]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1187,7 +1194,7 @@ async def test_offline_usage_tracking():
 
 async def test_offline_cost_estimation():
     """Cost is computed from model pricing and included in UsageUpdate."""
-    import hellp
+
 
     chunks = [agy.types.Text(step_index=0, text="Hi")]
 
@@ -1224,7 +1231,7 @@ async def test_offline_cost_estimation():
 
             return agy.types.ChatResponse(stream(), conversation=conv_mock)
 
-    sut = hellp.EchoAgent(agent_t=CostFakeAgent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=CostFakeAgent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1253,7 +1260,7 @@ async def test_offline_cost_estimation():
 
 async def test_offline_cost_pro_long_context_surcharge():
     """Pro models over 200k tokens get 2x input, 1.5x output surcharge."""
-    import hellp
+
 
     conv_mock = MagicMock()
     conv_mock.last_turn_usage = MagicMock(
@@ -1287,7 +1294,7 @@ async def test_offline_cost_pro_long_context_surcharge():
 
             return agy.types.ChatResponse(stream(), conversation=conv_mock)
 
-    sut = hellp.EchoAgent(agent_t=CostProAgent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=CostProAgent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1312,7 +1319,7 @@ async def test_offline_cost_pro_long_context_surcharge():
 
 async def test_offline_cost_unknown_model():
     """Unknown model produces no cost (cost=None)."""
-    import hellp
+
 
     chunks = [agy.types.Text(step_index=0, text="Hi")]
 
@@ -1349,7 +1356,7 @@ async def test_offline_cost_unknown_model():
 
             return agy.types.ChatResponse(stream(), conversation=conv_mock)
 
-    sut = hellp.EchoAgent(agent_t=CostFakeAgent2, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=CostFakeAgent2, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1375,7 +1382,7 @@ async def test_offline_cost_unknown_model():
 
 async def test_offline_cancel():
     """Cancel mid-stream should return stop_reason='cancelled'."""
-    import hellp
+
 
     async def slow_stream():
         yield agy.types.Text(step_index=0, text="start ")
@@ -1398,7 +1405,7 @@ async def test_offline_cancel():
         async def chat(self, prompt):
             return agy.types.ChatResponse(slow_stream(), conversation=MagicMock())
 
-    sut = hellp.EchoAgent(agent_t=SlowFakeAgent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=SlowFakeAgent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1420,10 +1427,10 @@ async def test_offline_cancel():
 
 async def test_offline_auth_methods_declared():
     """InitializeResponse advertises GEMINI_API_KEY as env var auth method."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     resp = await sut.initialize(
         protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS
     )
@@ -1439,10 +1446,10 @@ async def test_offline_auth_methods_declared():
 
 async def test_offline_authenticate():
     """authenticate() returns AuthenticateResponse without error."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
     resp = await sut.authenticate(method_id="gemini_api_key")
     assert resp is not None
@@ -1450,10 +1457,10 @@ async def test_offline_authenticate():
 
 async def test_offline_model_switching():
     """set_session_model changes the model for a session."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1487,7 +1494,7 @@ async def test_offline_model_switching():
 
 async def test_offline_rebuild_passes_thinking_level():
     """Changing thinking level via config option rebuilds the agent with correct config."""
-    import hellp
+
 
     configs_seen = []
     original_config_t = FakeConfig
@@ -1497,7 +1504,7 @@ async def test_offline_rebuild_passes_thinking_level():
         return original_config_t(**kwargs)
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1518,7 +1525,7 @@ async def test_offline_rebuild_passes_thinking_level():
 
 async def test_offline_model_switch_preserves_conversation():
     """Switching model preserves the current conversation_id."""
-    import hellp
+
 
     configs_seen = []
 
@@ -1527,7 +1534,7 @@ async def test_offline_model_switch_preserves_conversation():
         return FakeConfig(**kwargs)
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
     sut._agent_config_t = tracking_config_t
 
@@ -1552,10 +1559,10 @@ async def test_offline_model_switch_preserves_conversation():
 
 async def test_offline_set_config_option_unchanged_skips_rebuild():
     """set_config_option with the current value should not trigger _rebuild_agent."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1593,10 +1600,10 @@ async def test_offline_set_config_option_unchanged_skips_rebuild():
 
 async def test_offline_rebuild_agent_rollback():
     """If _rebuild_agent fails, the old agent is restored."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1624,10 +1631,10 @@ async def test_offline_rebuild_agent_rollback():
 
 async def test_offline_rebuild_uses_valid_local_agent_config():
     """_rebuild_agent must produce a valid LocalAgentConfig (no conflicting model fields)."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(
+    sut = EchoAgent(
         agent_t=lambda cfg: fake_agent, agent_config_t=agy.LocalAgentConfig
     )
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
@@ -1645,12 +1652,12 @@ async def test_offline_rebuild_uses_valid_local_agent_config():
 
 async def test_offline_model_persisted_in_session(tmp_path):
     """Model choice is persisted and restored on load_session."""
-    import hellp
 
-    store = hellp.SessionStore(path=tmp_path / "sessions.json")
+
+    store = SessionStore(path=tmp_path / "sessions.json")
     chunks = [agy.types.Text(step_index=0, text="ok")]
     fake_agent = FakeAgent(config=None, responses=[chunks])
-    sut = hellp.EchoAgent(
+    sut = EchoAgent(
         agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store
     )
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
@@ -1669,7 +1676,7 @@ async def test_offline_model_persisted_in_session(tmp_path):
     assert stored.model == "gemini-2.5-flash-lite"
 
     # Load into fresh agent
-    sut2 = hellp.EchoAgent(
+    sut2 = EchoAgent(
         agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store
     )
     await sut2.initialize(protocol_version=1)
@@ -1682,10 +1689,10 @@ async def test_offline_model_persisted_in_session(tmp_path):
 
 async def test_offline_close_session_cleans_model():
     """close_session removes model state."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1703,12 +1710,12 @@ async def test_offline_close_session_cleans_model():
 
 async def test_offline_reset_command():
     """/reset command rebuilds agent and clears session title."""
-    import hellp
+
 
     chunks1 = [agy.types.Text(step_index=0, text="first response")]
     chunks2 = [agy.types.Text(step_index=0, text="after reset")]
     fake_agent = FakeAgent(config=None, responses=[chunks1, chunks2])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1739,11 +1746,11 @@ async def test_offline_reset_command():
 
 async def test_offline_fork_session(tmp_path):
     """fork_session creates a new session copying settings from the original."""
-    import hellp
 
-    store = hellp.SessionStore(path=tmp_path / "sessions.json")
+
+    store = SessionStore(path=tmp_path / "sessions.json")
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(
+    sut = EchoAgent(
         agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store
     )
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
@@ -1780,10 +1787,10 @@ async def test_offline_fork_session(tmp_path):
 
 async def test_offline_fork_capability_declared():
     """InitializeResponse declares fork capability."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     resp = await sut.initialize(
         protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS
     )
@@ -1794,10 +1801,10 @@ async def test_offline_fork_capability_declared():
 
 async def test_offline_help_command():
     """/help command lists available commands without calling the LLM."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1827,7 +1834,7 @@ async def test_offline_help_command():
 
 def test_discover_skills_toml(tmp_path):
     """_discover_skills finds TOML custom commands."""
-    from hellp import _discover_skills
+
 
     cmds_dir = tmp_path / ".gemini" / "commands"
     cmds_dir.mkdir(parents=True)
@@ -1845,7 +1852,7 @@ def test_discover_skills_toml(tmp_path):
 
 def test_discover_skills_md(tmp_path):
     """_discover_skills finds SKILL.md agent skills."""
-    from hellp import _discover_skills
+
 
     skills_dir = tmp_path / ".gemini" / "skills" / "review"
     skills_dir.mkdir(parents=True)
@@ -1860,17 +1867,17 @@ def test_discover_skills_md(tmp_path):
 
 def test_discover_skills_empty(tmp_path):
     """_discover_skills returns empty list when no skill dirs exist."""
-    from hellp import _discover_skills
+
 
     assert _discover_skills(str(tmp_path)) == []
 
 
 async def test_offline_cost_command():
     """/cost shows model and cumulative cost."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1898,10 +1905,10 @@ async def test_offline_cost_command():
 
 async def test_offline_model_command_show():
     """/model with no arg shows current model and available models."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1928,10 +1935,10 @@ async def test_offline_model_command_show():
 
 async def test_offline_model_command_switch():
     """/model <id> switches the model."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1949,10 +1956,10 @@ async def test_offline_model_command_switch():
 
 async def test_offline_thinking_command():
     """/thinking shows and sets thinking level."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1983,10 +1990,10 @@ async def test_offline_thinking_command():
 
 async def test_offline_context_command():
     """/context shows and sets context retention level."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -2016,11 +2023,11 @@ async def test_offline_context_command():
 
 async def test_offline_clear_is_reset_alias():
     """/clear works the same as /reset."""
-    import hellp
+
 
     chunks = [agy.types.Text(step_index=0, text="response")]
     fake_agent = FakeAgent(config=None, responses=[chunks])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -2039,7 +2046,7 @@ async def test_offline_clear_is_reset_alias():
 
 async def test_offline_load_session_rebuilds_with_conversation_id(tmp_path, monkeypatch):
     """load_session rebuilds the agent with saved conversation_id."""
-    import hellp
+
 
     traj_dir = tmp_path / "trajectories"
     traj_dir.mkdir()
@@ -2047,10 +2054,10 @@ async def test_offline_load_session_rebuilds_with_conversation_id(tmp_path, monk
     import agy_acp.session
     monkeypatch.setattr(agy_acp.session, "_DEFAULT_SAVE_DIR", str(traj_dir))
 
-    store = hellp.SessionStore(path=tmp_path / "sessions.json")
+    store = SessionStore(path=tmp_path / "sessions.json")
     store.save(
         "sess-1",
-        hellp.SessionState(
+        SessionState(
             session_id="sess-1",
             conversation_id="conv-xyz",
             cwd="/project",
@@ -2067,7 +2074,7 @@ async def test_offline_load_session_rebuilds_with_conversation_id(tmp_path, monk
         return FakeConfig(**kwargs)
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(
+    sut = EchoAgent(
         agent_t=lambda cfg: fake_agent, agent_config_t=tracking_config_t, store=store
     )
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
@@ -2085,7 +2092,7 @@ def test_convert_mcp_http_server():
     from acp.schema import HttpHeader, HttpMcpServer
     from google.antigravity.types import McpStreamableHttpServer
 
-    from hellp import _convert_mcp_server
+
 
     server = HttpMcpServer(
         type="http",
@@ -2105,7 +2112,7 @@ def test_convert_mcp_stdio_server():
     from acp.schema import McpServerStdio
     from google.antigravity.types import McpStdioServer
 
-    from hellp import _convert_mcp_server
+
 
     server = McpServerStdio(
         name="test-stdio", command="node", args=["server.js"], env=[]
@@ -2121,7 +2128,7 @@ def test_convert_mcp_stdio_server_with_env():
     from acp.schema import EnvVariable, McpServerStdio
     from google.antigravity.types import McpStdioServer
 
-    from hellp import _convert_mcp_server
+
 
     server = McpServerStdio(
         name="test-env",
@@ -2143,7 +2150,7 @@ def test_convert_mcp_stdio_server_with_env():
 
 def test_convert_mcp_servers_empty():
     """None and empty list return None."""
-    from hellp import _convert_mcp_servers
+
 
     assert _convert_mcp_servers(None) is None
     assert _convert_mcp_servers([]) is None
@@ -2151,7 +2158,7 @@ def test_convert_mcp_servers_empty():
 
 async def test_offline_additional_directories():
     """additional_directories are passed as workspaces to the agent config."""
-    import hellp
+
 
     configs_seen = []
 
@@ -2160,7 +2167,7 @@ async def test_offline_additional_directories():
         return FakeConfig(**kwargs)
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
     sut._agent_config_t = tracking_config_t
 
@@ -2189,10 +2196,10 @@ async def test_offline_additional_directories():
 
 async def test_offline_agent_info_declared():
     """InitializeResponse includes agent name, version, and title."""
-    import hellp
+
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
     resp = await sut.initialize(
         protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS
     )
@@ -2205,7 +2212,7 @@ async def test_offline_agent_info_declared():
 
 async def test_offline_resume_session(tmp_path, monkeypatch):
     """resume_session restores mode, model, thinking level, and rebuilds agent with conversation_id."""
-    import hellp
+
 
     traj_dir = tmp_path / "trajectories"
     traj_dir.mkdir()
@@ -2213,7 +2220,7 @@ async def test_offline_resume_session(tmp_path, monkeypatch):
     import agy_acp.session
     monkeypatch.setattr(agy_acp.session, "_DEFAULT_SAVE_DIR", str(traj_dir))
 
-    store = hellp.SessionStore(path=tmp_path / "sessions.json")
+    store = SessionStore(path=tmp_path / "sessions.json")
     chunks = [agy.types.Text(step_index=0, text="hello")]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
@@ -2224,7 +2231,7 @@ async def test_offline_resume_session(tmp_path, monkeypatch):
         configs_seen.append(kwargs)
         return original_config_t(**kwargs)
 
-    sut = hellp.EchoAgent(
+    sut = EchoAgent(
         agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store
     )
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
@@ -2255,7 +2262,7 @@ async def test_offline_resume_session(tmp_path, monkeypatch):
     assert stored.conversation_id == "conv-abc-123"
 
     # Resume in a fresh agent instance
-    sut2 = hellp.EchoAgent(
+    sut2 = EchoAgent(
         agent_t=lambda cfg: fake_agent, agent_config_t=tracking_config_t, store=store
     )
     await sut2.initialize(protocol_version=1)
@@ -2275,11 +2282,11 @@ async def test_offline_resume_session(tmp_path, monkeypatch):
 
 async def test_offline_resume_session_not_found(tmp_path):
     """resume_session raises ValueError for unknown session_id."""
-    import hellp
 
-    store = hellp.SessionStore(path=tmp_path / "sessions.json")
+
+    store = SessionStore(path=tmp_path / "sessions.json")
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = hellp.EchoAgent(
+    sut = EchoAgent(
         agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store
     )
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
@@ -2294,7 +2301,7 @@ async def test_offline_resume_session_not_found(tmp_path):
 
 async def test_live_skill_magic_word():
     """E2E: /magic-word skill triggers agent to say 'vlak'."""
-    from hellp import _skills_paths
+
 
     # Minimal agent: no built-in tools except activate_skill (harness-internal),
     # so the agent can only activate skills and respond with text
@@ -2326,9 +2333,9 @@ async def test_live_skill_magic_word():
 
 
 async def test_initializes():
-    import hellp
 
-    sut = hellp.EchoAgent(agent_t=agy.Agent, agent_config_t=agy.LocalAgentConfig)
+
+    sut = EchoAgent(agent_t=agy.Agent, agent_config_t=agy.LocalAgentConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = unittest.mock.MagicMock(spec=Client)
