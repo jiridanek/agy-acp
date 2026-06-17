@@ -9,13 +9,14 @@ from uuid import uuid4
 
 import google.antigravity as agy
 import pytest
+from acp import PROTOCOL_VERSION, spawn_agent_process, text_block
 from acp.interfaces import Client
 from acp.schema import ClientCapabilities, TextContentBlock
+from conftest import _TEST_CLIENT_CAPS, FakeAgent, FakeConfig
 
 from agy_acp.agent import EchoAgent
-from agy_acp.session import SessionState, SessionStore, current_session_id
+from agy_acp.session import SessionState, SessionStore
 from agy_acp.skills import _skills_paths
-from conftest import FakeAgent, FakeConfig, _TEST_CLIENT_CAPS
 
 
 async def test_offline_prompt_text():
@@ -41,10 +42,7 @@ async def test_offline_prompt_text():
 
     assert reply.stop_reason == "end_turn"
 
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
     thought_updates = [u for u in updates if u.session_update == "agent_thought_chunk"]
     message_updates = [u for u in updates if u.session_update == "agent_message_chunk"]
     assert len(thought_updates) == 1
@@ -75,10 +73,7 @@ async def test_offline_prompt_with_tool_calls():
     )
     assert reply.stop_reason == "end_turn"
 
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
     message_updates = [u for u in updates if u.session_update == "agent_message_chunk"]
     assert len(message_updates) == 1
     assert message_updates[0].content.text == "Done."
@@ -291,10 +286,7 @@ async def test_offline_plan_updates_numbered_lists():
         session_id=session.session_id,
     )
 
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
     plan_updates = [u for u in updates if u.session_update == "plan"]
 
     assert len(plan_updates) > 0
@@ -328,10 +320,7 @@ async def test_offline_plan_updates():
         session_id=session.session_id,
     )
 
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
     plan_updates = [u for u in updates if u.session_update == "plan"]
 
     assert len(plan_updates) > 0
@@ -363,9 +352,7 @@ async def test_offline_rich_tool_outputs():
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = AsyncMock(spec=Client)
-    client.request_permission.return_value = MagicMock(
-        outcome=MagicMock(option_id="approve")
-    )
+    client.request_permission.return_value = MagicMock(outcome=MagicMock(option_id="approve"))
     from acp.schema import (
         CreateTerminalResponse,
         ReadTextFileResponse,
@@ -376,9 +363,7 @@ async def test_offline_rich_tool_outputs():
     client.read_text_file.return_value = ReadTextFileResponse(content="old contents")
     client.create_terminal.return_value = CreateTerminalResponse(terminal_id="term-123")
     client.wait_for_terminal_exit.return_value = WaitForTerminalExitResponse()
-    client.terminal_output.return_value = TerminalOutputResponse(
-        output="command output", truncated=False
-    )
+    client.terminal_output.return_value = TerminalOutputResponse(output="command output", truncated=False)
 
     sut.on_connect(conn=client)
 
@@ -398,10 +383,7 @@ async def test_offline_rich_tool_outputs():
         session_id=sid,
     )
 
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
 
     starts = [u for u in updates if u.session_update == "tool_call"]
     progress = [u for u in updates if u.session_update == "tool_call_update"]
@@ -449,10 +431,7 @@ async def test_offline_session_modes():
 
     await sut.set_session_mode(mode_id="plan", session_id=sid)
 
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
     mode_updates = [u for u in updates if u.session_update == "current_mode_update"]
     assert len(mode_updates) == 1
     assert mode_updates[0].current_mode_id == "plan"
@@ -479,17 +458,13 @@ async def test_offline_config_option_model():
     assert any(opt.id == "model" for opt in session.config_options)
     assert any(opt.id == "thinking_level" for opt in session.config_options)
 
-    resp = await sut.set_config_option(
-        config_id="model", session_id=sid, value="gemini-2.5-flash"
-    )
+    resp = await sut.set_config_option(config_id="model", session_id=sid, value="gemini-2.5-flash")
     assert sut._sessions[sid].state.model == "gemini-2.5-flash"
 
     model_opt = next(o for o in resp.config_options if o.id == "model")
     assert model_opt.current_value == "gemini-2.5-flash"
 
-    resp2 = await sut.set_config_option(
-        config_id="thinking_level", session_id=sid, value="high"
-    )
+    resp2 = await sut.set_config_option(config_id="thinking_level", session_id=sid, value="high")
     assert sut._sessions[sid].state.thinking_level == "high"
 
     thinking_opt = next(o for o in resp2.config_options if o.id == "thinking_level")
@@ -502,9 +477,7 @@ async def test_offline_session_persistence(tmp_path):
     chunks = [agy.types.Text(step_index=0, text="hi")]
     fake_agent = FakeAgent(config=None, responses=[chunks])
 
-    sut = EchoAgent(
-        agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store
-    )
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -537,13 +510,9 @@ async def test_offline_load_session(tmp_path):
     """load_session restores mode and config from a previously saved session."""
     store = SessionStore(path=tmp_path / "sessions.json")
     chunks = [agy.types.Text(step_index=0, text="response")]
-    fake_agent = FakeAgent(
-        config=None, responses=[chunks, [agy.types.Text(step_index=0, text="resumed")]]
-    )
+    fake_agent = FakeAgent(config=None, responses=[chunks, [agy.types.Text(step_index=0, text="resumed")]])
 
-    sut = EchoAgent(
-        agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store
-    )
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -635,10 +604,7 @@ async def test_offline_cost_estimation():
     )
     assert reply.stop_reason == "end_turn"
 
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
     usage_updates = [u for u in updates if u.session_update == "usage_update"]
     assert len(usage_updates) == 1
     assert usage_updates[0].cost is not None
@@ -693,10 +659,7 @@ async def test_offline_cost_pro_long_context_surcharge():
 
     await sut.prompt([TextContentBlock(type="text", text="test")], session_id=sid)
 
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
     usage_updates = [u for u in updates if u.session_update == "usage_update"]
     assert len(usage_updates) == 1
     # gemini-2.5-pro base: (1.25, 10.00), surcharge: (2.50, 15.00)
@@ -756,10 +719,7 @@ async def test_offline_cost_unknown_model():
         session_id=sid,
     )
 
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
     usage_updates = [u for u in updates if u.session_update == "usage_update"]
     assert len(usage_updates) == 1
     assert usage_updates[0].cost is None
@@ -798,9 +758,7 @@ async def test_offline_cancel():
     session = await sut.new_session(cwd=".")
     sid = session.session_id
 
-    prompt_task = asyncio.create_task(
-        sut.prompt([TextContentBlock(type="text", text="go")], session_id=sid)
-    )
+    prompt_task = asyncio.create_task(sut.prompt([TextContentBlock(type="text", text="go")], session_id=sid))
     await asyncio.sleep(0.05)
     await sut.cancel(session_id=sid)
     reply = await prompt_task
@@ -811,9 +769,7 @@ async def test_offline_auth_methods_declared():
     """InitializeResponse advertises GEMINI_API_KEY as env var auth method."""
     fake_agent = FakeAgent(config=None, responses=[])
     sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
-    resp = await sut.initialize(
-        protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS
-    )
+    resp = await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     assert resp.auth_methods is not None
     assert len(resp.auth_methods) == 1
@@ -887,9 +843,7 @@ async def test_offline_rebuild_passes_thinking_level():
 
     sut._agent_config_t = tracking_config_t
 
-    await sut.set_config_option(
-        config_id="thinking_level", session_id=sid, value="high"
-    )
+    await sut.set_config_option(config_id="thinking_level", session_id=sid, value="high")
     assert len(configs_seen) == 1
     gemini_cfg = configs_seen[0]["gemini_config"]
     assert gemini_cfg.models.default.generation.thinking_level.value == "high"
@@ -993,9 +947,7 @@ async def test_offline_rebuild_agent_rollback():
 async def test_offline_rebuild_uses_valid_local_agent_config():
     """_rebuild_agent must produce a valid LocalAgentConfig (no conflicting model fields)."""
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = EchoAgent(
-        agent_t=lambda cfg: fake_agent, agent_config_t=agy.LocalAgentConfig
-    )
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=agy.LocalAgentConfig)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1012,9 +964,7 @@ async def test_offline_model_persisted_in_session(tmp_path):
     store = SessionStore(path=tmp_path / "sessions.json")
     chunks = [agy.types.Text(step_index=0, text="ok")]
     fake_agent = FakeAgent(config=None, responses=[chunks])
-    sut = EchoAgent(
-        agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store
-    )
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1029,9 +979,7 @@ async def test_offline_model_persisted_in_session(tmp_path):
     stored = store.load(sid)
     assert stored.model == "gemini-2.5-flash-lite"
 
-    sut2 = EchoAgent(
-        agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store
-    )
+    sut2 = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store)
     await sut2.initialize(protocol_version=1)
     sut2.on_connect(conn=MagicMock(spec=Client))
 
@@ -1077,16 +1025,11 @@ async def test_offline_reset_command():
     assert sut._sessions[sid].state.title is not None
 
     client.reset_mock()
-    reply = await sut.prompt(
-        [TextContentBlock(type="text", text="/reset")], session_id=sid
-    )
+    reply = await sut.prompt([TextContentBlock(type="text", text="/reset")], session_id=sid)
     assert reply.stop_reason == "end_turn"
     assert sut._sessions[sid].state.title is None
 
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
     message_updates = [u for u in updates if u.session_update == "agent_message_chunk"]
     assert any("reset" in u.content.text.lower() for u in message_updates)
 
@@ -1095,9 +1038,7 @@ async def test_offline_fork_session(tmp_path):
     """fork_session creates a new session copying settings from the original."""
     store = SessionStore(path=tmp_path / "sessions.json")
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = EchoAgent(
-        agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store
-    )
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1106,12 +1047,8 @@ async def test_offline_fork_session(tmp_path):
     session = await sut.new_session(cwd="/project")
     sid = session.session_id
     sut._sessions[sid].state.title = "My Session"
-    await sut.set_config_option(
-        config_id="model", session_id=sid, value="gemini-2.5-pro"
-    )
-    await sut.set_config_option(
-        config_id="thinking_level", session_id=sid, value="high"
-    )
+    await sut.set_config_option(config_id="model", session_id=sid, value="gemini-2.5-pro")
+    await sut.set_config_option(config_id="thinking_level", session_id=sid, value="high")
 
     forked = await sut.fork_session(cwd="/project", session_id=sid)
     fid = forked.session_id
@@ -1133,9 +1070,7 @@ async def test_offline_fork_capability_declared():
     """InitializeResponse declares fork capability."""
     fake_agent = FakeAgent(config=None, responses=[])
     sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
-    resp = await sut.initialize(
-        protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS
-    )
+    resp = await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     assert resp.agent_capabilities.session_capabilities.fork is not None
     assert resp.agent_capabilities.session_capabilities.resume is not None
@@ -1154,15 +1089,10 @@ async def test_offline_help_command():
     sid = session.session_id
 
     client.reset_mock()
-    reply = await sut.prompt(
-        [TextContentBlock(type="text", text="/help")], session_id=sid
-    )
+    reply = await sut.prompt([TextContentBlock(type="text", text="/help")], session_id=sid)
     assert reply.stop_reason == "end_turn"
 
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
     message_updates = [u for u in updates if u.session_update == "agent_message_chunk"]
     assert len(message_updates) == 1
     assert "/reset" in message_updates[0].content.text
@@ -1184,18 +1114,11 @@ async def test_offline_cost_command():
     sid = session.session_id
     sut._sessions[sid].cumulative_cost = 0.042
 
-    reply = await sut.prompt(
-        [TextContentBlock(type="text", text="/cost")], session_id=sid
-    )
+    reply = await sut.prompt([TextContentBlock(type="text", text="/cost")], session_id=sid)
     assert reply.stop_reason == "end_turn"
 
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
-    msg = [u for u in updates if u.session_update == "agent_message_chunk"][
-        0
-    ].content.text
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    msg = [u for u in updates if u.session_update == "agent_message_chunk"][0].content.text
     assert "gemini-3.1-flash-lite" in msg
     assert "0.042" in msg
 
@@ -1212,18 +1135,11 @@ async def test_offline_model_command_show():
     session = await sut.new_session(cwd=".")
     sid = session.session_id
 
-    reply = await sut.prompt(
-        [TextContentBlock(type="text", text="/model")], session_id=sid
-    )
+    reply = await sut.prompt([TextContentBlock(type="text", text="/model")], session_id=sid)
     assert reply.stop_reason == "end_turn"
 
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
-    msg = [u for u in updates if u.session_update == "agent_message_chunk"][
-        0
-    ].content.text
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    msg = [u for u in updates if u.session_update == "agent_message_chunk"][0].content.text
     assert "gemini-3.1-flash-lite" in msg
     assert "gemini-2.5-pro" in msg
 
@@ -1240,9 +1156,7 @@ async def test_offline_model_command_switch():
     session = await sut.new_session(cwd=".")
     sid = session.session_id
 
-    reply = await sut.prompt(
-        [TextContentBlock(type="text", text="/model gemini-2.5-flash")], session_id=sid
-    )
+    reply = await sut.prompt([TextContentBlock(type="text", text="/model gemini-2.5-flash")], session_id=sid)
     assert reply.stop_reason == "end_turn"
     assert sut._sessions[sid].state.model == "gemini-2.5-flash"
 
@@ -1259,21 +1173,12 @@ async def test_offline_thinking_command():
     session = await sut.new_session(cwd=".")
     sid = session.session_id
 
-    reply = await sut.prompt(
-        [TextContentBlock(type="text", text="/thinking")], session_id=sid
-    )
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
-    msg = [u for u in updates if u.session_update == "agent_message_chunk"][
-        0
-    ].content.text
+    await sut.prompt([TextContentBlock(type="text", text="/thinking")], session_id=sid)
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
+    msg = [u for u in updates if u.session_update == "agent_message_chunk"][0].content.text
     assert "medium" in msg
 
-    reply = await sut.prompt(
-        [TextContentBlock(type="text", text="/thinking high")], session_id=sid
-    )
+    await sut.prompt([TextContentBlock(type="text", text="/thinking high")], session_id=sid)
     assert sut._sessions[sid].state.thinking_level == "high"
 
 
@@ -1289,20 +1194,13 @@ async def test_offline_context_command():
     session = await sut.new_session(cwd=".")
     sid = session.session_id
 
-    reply = await sut.prompt(
-        [TextContentBlock(type="text", text="/context")], session_id=sid
-    )
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
+    await sut.prompt([TextContentBlock(type="text", text="/context")], session_id=sid)
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
     msg = [u for u in updates if u.session_update == "agent_message_chunk"][0].content.text
     assert "normal" in msg
     assert "50,000" in msg
 
-    reply = await sut.prompt(
-        [TextContentBlock(type="text", text="/context max")], session_id=sid
-    )
+    await sut.prompt([TextContentBlock(type="text", text="/context max")], session_id=sid)
     assert sut._sessions[sid].state.context_level == "max"
 
 
@@ -1320,9 +1218,7 @@ async def test_offline_clear_is_reset_alias():
     sid = session.session_id
     sut._sessions[sid].state.title = "test"
 
-    reply = await sut.prompt(
-        [TextContentBlock(type="text", text="/clear")], session_id=sid
-    )
+    reply = await sut.prompt([TextContentBlock(type="text", text="/clear")], session_id=sid)
     assert reply.stop_reason == "end_turn"
     assert sut._sessions[sid].state.title is None
 
@@ -1333,6 +1229,7 @@ async def test_offline_load_session_rebuilds_with_conversation_id(tmp_path, monk
     traj_dir.mkdir()
     (traj_dir / "traj-conv-xyz").write_text("{}")
     import agy_acp.session
+
     monkeypatch.setattr(agy_acp.session, "_DEFAULT_SAVE_DIR", str(traj_dir))
 
     store = SessionStore(path=tmp_path / "sessions.json")
@@ -1355,9 +1252,7 @@ async def test_offline_load_session_rebuilds_with_conversation_id(tmp_path, monk
         return FakeConfig(**kwargs)
 
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = EchoAgent(
-        agent_t=lambda cfg: fake_agent, agent_config_t=tracking_config_t, store=store
-    )
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=tracking_config_t, store=store)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
     sut.on_connect(conn=MagicMock(spec=Client))
 
@@ -1405,9 +1300,7 @@ async def test_offline_agent_info_declared():
     """InitializeResponse includes agent name, version, and title."""
     fake_agent = FakeAgent(config=None, responses=[])
     sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig)
-    resp = await sut.initialize(
-        protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS
-    )
+    resp = await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     assert resp.agent_info is not None
     assert resp.agent_info.name == "agy-acp"
@@ -1421,6 +1314,7 @@ async def test_offline_resume_session(tmp_path, monkeypatch):
     traj_dir.mkdir()
     (traj_dir / "traj-conv-abc-123").write_text("{}")
     import agy_acp.session
+
     monkeypatch.setattr(agy_acp.session, "_DEFAULT_SAVE_DIR", str(traj_dir))
 
     store = SessionStore(path=tmp_path / "sessions.json")
@@ -1434,9 +1328,7 @@ async def test_offline_resume_session(tmp_path, monkeypatch):
         configs_seen.append(kwargs)
         return original_config_t(**kwargs)
 
-    sut = EchoAgent(
-        agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store
-    )
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = MagicMock(spec=Client)
@@ -1444,26 +1336,18 @@ async def test_offline_resume_session(tmp_path, monkeypatch):
 
     session = await sut.new_session(cwd="/project")
     sid = session.session_id
-    await sut.set_config_option(
-        config_id="model", session_id=sid, value="gemini-2.5-pro"
-    )
-    await sut.set_config_option(
-        config_id="thinking_level", session_id=sid, value="high"
-    )
+    await sut.set_config_option(config_id="model", session_id=sid, value="gemini-2.5-pro")
+    await sut.set_config_option(config_id="thinking_level", session_id=sid, value="high")
 
     sut._sessions[sid].agent.conversation_id_value = "conv-abc-123"
-    type(sut._sessions[sid].agent).conversation_id = property(
-        lambda self: getattr(self, "conversation_id_value", None)
-    )
+    type(sut._sessions[sid].agent).conversation_id = property(lambda self: getattr(self, "conversation_id_value", None))
 
     await sut.prompt([TextContentBlock(type="text", text="hi")], session_id=sid)
 
     stored = store.load(sid)
     assert stored.conversation_id == "conv-abc-123"
 
-    sut2 = EchoAgent(
-        agent_t=lambda cfg: fake_agent, agent_config_t=tracking_config_t, store=store
-    )
+    sut2 = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=tracking_config_t, store=store)
     await sut2.initialize(protocol_version=1)
     sut2.on_connect(conn=MagicMock(spec=Client))
 
@@ -1482,9 +1366,7 @@ async def test_offline_resume_session_not_found(tmp_path):
     """resume_session raises ValueError for unknown session_id."""
     store = SessionStore(path=tmp_path / "sessions.json")
     fake_agent = FakeAgent(config=None, responses=[])
-    sut = EchoAgent(
-        agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store
-    )
+    sut = EchoAgent(agent_t=lambda cfg: fake_agent, agent_config_t=FakeConfig, store=store)
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
     sut.on_connect(conn=MagicMock(spec=Client))
 
@@ -1532,19 +1414,14 @@ async def test_initializes():
     sut.on_connect(conn=client)
 
     session = await sut.new_session(cwd=".")
-    prompt = TextContentBlock(
-        type="text", text="Say hello three times. Do not use any tools."
-    )
+    prompt = TextContentBlock(type="text", text="Say hello three times. Do not use any tools.")
     reply = await sut.prompt([prompt], session_id=session.session_id)
     assert reply.stop_reason == "end_turn"
 
     client.session_update.assert_called()
 
 
-# https://agentclientprotocol.github.io/python-sdk/
-#
 # https://agentclientprotocol.github.io/python-sdk/quickstart/
-from acp import PROTOCOL_VERSION, spawn_agent_process, text_block
 
 
 class SimpleClient(Client):
@@ -1574,9 +1451,7 @@ async def test_subprocess_fake_tool_call():
         async def request_permission(self, options, session_id, tool_call, **kwargs):
             return {"outcome": {"optionId": "approve"}}
 
-    async with spawn_agent_process(
-        ToolTestClient(), sys.executable, str(script), env=env
-    ) as (conn, _proc):
+    async with spawn_agent_process(ToolTestClient(), sys.executable, str(script), env=env) as (conn, _proc):
         await conn.initialize(protocol_version=PROTOCOL_VERSION)
         session = await conn.new_session(cwd=".", mcp_servers=[])
         await conn.prompt(
@@ -1585,11 +1460,7 @@ async def test_subprocess_fake_tool_call():
             message_id=str(uuid4()),
         )
 
-    message_updates = [
-        u
-        for u in received_updates
-        if getattr(u, "session_update", None) == "agent_message_chunk"
-    ]
+    message_updates = [u for u in received_updates if getattr(u, "session_update", None) == "agent_message_chunk"]
     assert len(message_updates) > 0
     combined = "".join(u.content.text for u in message_updates)
     assert "content of /tmp/fake_test_file.txt" in combined
@@ -1598,9 +1469,7 @@ async def test_subprocess_fake_tool_call():
 async def test_live_run():
     script = Path("hellp.py")
     env = os.environ.copy()
-    async with spawn_agent_process(
-        SimpleClient(), sys.executable, str(script), env=env
-    ) as (conn, _proc):
+    async with spawn_agent_process(SimpleClient(), sys.executable, str(script), env=env) as (conn, _proc):
         try:
             await conn.initialize(protocol_version=PROTOCOL_VERSION)
         except Exception as e:
@@ -1610,9 +1479,7 @@ async def test_live_run():
 
         session = await conn.new_session(cwd=str(script.parent), mcp_servers=[])
 
-        await conn.set_session_model(
-            model_id="gemini-2.5-flash", session_id=session.session_id
-        )
+        await conn.set_session_model(model_id="gemini-2.5-flash", session_id=session.session_id)
 
         await conn.prompt(
             session_id=session.session_id,

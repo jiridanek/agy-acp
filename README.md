@@ -230,10 +230,14 @@ The agent detects IntelliJ via `client_info.name` containing "JetBrains" and adj
 
 ```bash
 # Offline tests (no API key needed)
-python -m pytest hellp_test.py -k 'not test_initializes and not test_live_run'
+uv run pytest tests/ --ignore=tests/evals -k "not test_live and not test_initializes and not test_subprocess"
 
 # All tests (requires GEMINI_API_KEY)
-python -m pytest hellp_test.py
+uv run pytest tests/ --ignore=tests/evals
+
+# Lint
+uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
 ```
 
 ## Architecture

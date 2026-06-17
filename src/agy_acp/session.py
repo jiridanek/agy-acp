@@ -2,14 +2,12 @@ import json
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
-
-from pydantic import BaseModel
 
 import google.antigravity as agy
 from acp.schema import HttpMcpServer, McpServerStdio, SseMcpServer
+from pydantic import BaseModel
 
-from agy_acp.config import _DEFAULT_MODEL_ID, _DEFAULT_THINKING_LEVEL, _DEFAULT_CONTEXT
+from agy_acp.config import _DEFAULT_CONTEXT, _DEFAULT_MODEL_ID, _DEFAULT_THINKING_LEVEL
 from agy_acp.log import log
 
 current_session_id = ContextVar("current_session_id")

@@ -4,10 +4,7 @@ from agy_acp.tool_ui import _permission_description, _tool_title
 def test_tool_title_command_line():
     """_tool_title extracts command_line (SDK built-in run_command key)."""
     assert (
-        _tool_title(
-            "run_command", {"command_line": "git status", "working_dir": "/tmp"}
-        )
-        == "run_command: git status"
+        _tool_title("run_command", {"command_line": "git status", "working_dir": "/tmp"}) == "run_command: git status"
     )
 
 
@@ -28,9 +25,7 @@ def test_tool_title_mcp():
 
 def test_permission_description_run_command():
     """_permission_description shows working dir for run_command (command is in title)."""
-    desc = _permission_description(
-        "run_command", {"command_line": "git status", "working_dir": "/project"}
-    )
+    desc = _permission_description("run_command", {"command_line": "git status", "working_dir": "/project"})
     assert desc == "in `/project`"
 
 

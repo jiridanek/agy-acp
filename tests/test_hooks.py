@@ -1,13 +1,12 @@
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import google.antigravity as agy
 from acp.interfaces import Client
+from conftest import _TEST_CLIENT_CAPS, FakeAgent, FakeConfig
 
 from agy_acp.agent import EchoAgent
-from agy_acp.hooks import MyPreToolCallDecideHook, MyPostToolCallHook
+from agy_acp.hooks import MyPostToolCallHook, MyPreToolCallDecideHook
 from agy_acp.session import current_session_id
-from conftest import FakeAgent, FakeConfig, _TEST_CLIENT_CAPS
 
 
 async def _make_hook_sut():
@@ -18,9 +17,7 @@ async def _make_hook_sut():
     )
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
     client = AsyncMock(spec=Client)
-    client.request_permission.return_value = MagicMock(
-        outcome=MagicMock(option_id="approve")
-    )
+    client.request_permission.return_value = MagicMock(outcome=MagicMock(option_id="approve"))
     sut.on_connect(conn=client)
     session = await sut.new_session(cwd=".")
     sid = session.session_id
@@ -78,10 +75,7 @@ async def test_offline_hook_tool_tracking():
 
     client.request_permission.assert_not_called()
 
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
     tool_starts = [u for u in updates if u.session_update == "tool_call"]
     tool_progress = [u for u in updates if u.session_update == "tool_call_update"]
     assert len(tool_starts) == 1
@@ -100,9 +94,7 @@ async def test_offline_hook_run_command_requires_permission():
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = AsyncMock(spec=Client)
-    client.request_permission.return_value = MagicMock(
-        outcome=MagicMock(option_id="approve")
-    )
+    client.request_permission.return_value = MagicMock(outcome=MagicMock(option_id="approve"))
     sut.on_connect(conn=client)
     session = await sut.new_session(cwd=".")
     sid = session.session_id
@@ -136,9 +128,7 @@ async def test_offline_hook_run_command_denied():
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = AsyncMock(spec=Client)
-    client.request_permission.return_value = MagicMock(
-        outcome=MagicMock(option_id="cancelled")
-    )
+    client.request_permission.return_value = MagicMock(outcome=MagicMock(option_id="cancelled"))
     sut.on_connect(conn=client)
     session = await sut.new_session(cwd=".")
     sid = session.session_id
@@ -153,9 +143,7 @@ async def test_offline_hook_run_command_denied():
 
         op_ctx = OperationContext(TurnContext(SessionContext()))
 
-        tc = agy.types.ToolCall(
-            id="tc3", name="run_command", args={"command": "rm -rf /"}
-        )
+        tc = agy.types.ToolCall(id="tc3", name="run_command", args={"command": "rm -rf /"})
         pre_hook = MyPreToolCallDecideHook(sut)
         result = await pre_hook.run(op_ctx, tc)
         assert result.allow is False
@@ -163,10 +151,7 @@ async def test_offline_hook_run_command_denied():
     finally:
         current_session_id.reset(token)
 
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
     tool_starts = [u for u in updates if u.session_update == "tool_call"]
     assert len(tool_starts) == 0
 
@@ -180,9 +165,7 @@ async def test_offline_hook_mcp_tool_requires_permission():
     await sut.initialize(protocol_version=1, client_capabilities=_TEST_CLIENT_CAPS)
 
     client = AsyncMock(spec=Client)
-    client.request_permission.return_value = MagicMock(
-        outcome=MagicMock(option_id="approve")
-    )
+    client.request_permission.return_value = MagicMock(outcome=MagicMock(option_id="approve"))
     sut.on_connect(conn=client)
     session = await sut.new_session(cwd=".")
     sid = session.session_id
@@ -197,9 +180,7 @@ async def test_offline_hook_mcp_tool_requires_permission():
 
         op_ctx = OperationContext(TurnContext(SessionContext()))
 
-        tc = agy.types.ToolCall(
-            id="tc-mcp", name="mcp_idea_execute_tool", args={"command": "echo hi"}
-        )
+        tc = agy.types.ToolCall(id="tc-mcp", name="mcp_idea_execute_tool", args={"command": "echo hi"})
         pre_hook = MyPreToolCallDecideHook(sut)
         result = await pre_hook.run(op_ctx, tc)
         assert result.allow is True
@@ -278,10 +259,7 @@ async def test_offline_nonzero_exit_code_marks_failed():
     finally:
         current_session_id.reset(token)
 
-    updates = [
-        call.kwargs.get("update") or call.args[1]
-        for call in client.session_update.call_args_list
-    ]
+    updates = [call.kwargs.get("update") or call.args[1] for call in client.session_update.call_args_list]
     progress = [u for u in updates if u.session_update == "tool_call_update"]
     assert len(progress) == 1
     assert progress[0].status == "failed"

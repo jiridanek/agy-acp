@@ -1,5 +1,4 @@
 from acp.schema import ModelInfo, SessionMode
-
 from google.antigravity.types import BuiltinTools
 
 _AVAILABLE_MODELS = [

@@ -32,21 +32,21 @@ class SecretMaskingFilter(logging.Filter):
     def scrub(self, text: str) -> str:
         masked = re.sub(
             r'([\'"]?(?:api_?key|secret|token|password|auth|credential)[a-zA-Z0-9_]*[\'"]?\s*[:=]\s*[\'"])(?:[^\'"]+)([\'"])',
-            r'\g<1>***REDACTED***\g<2>',
+            r"\g<1>***REDACTED***\g<2>",
             text,
-            flags=re.IGNORECASE
+            flags=re.IGNORECASE,
         )
         masked = re.sub(
             r'(name=[\'"][^\'"]*(?:api_key|secret|token|password|auth|credential)[^\'"]*[\'"]\s*,\s*value=[\'"])(?:[^\'"]+)([\'"])',
-            r'\g<1>***REDACTED***\g<2>',
+            r"\g<1>***REDACTED***\g<2>",
             masked,
-            flags=re.IGNORECASE
+            flags=re.IGNORECASE,
         )
         masked = re.sub(
             r'([\'"]name[\'"]\s*:\s*[\'"][^\'"]*(?:api_?key|secret|token|password|auth|credential)[^\'"]*[\'"]\s*,\s*[\'"]value[\'"]\s*:\s*[\'"])(?:[^\'"]+)([\'"])',
-            r'\g<1>***REDACTED***\g<2>',
+            r"\g<1>***REDACTED***\g<2>",
             masked,
-            flags=re.IGNORECASE
+            flags=re.IGNORECASE,
         )
         return masked
 

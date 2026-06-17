@@ -19,7 +19,8 @@ def _parse_skill_description(skill_md: Path) -> str | None:
 
 
 def _discover_skills(
-    cwd: str, extra_skills: list[Path] | None = None,
+    cwd: str,
+    extra_skills: list[Path] | None = None,
 ) -> list[AvailableCommand]:
     """Scan for TOML custom commands and SKILL.md agent skills."""
     import tomllib

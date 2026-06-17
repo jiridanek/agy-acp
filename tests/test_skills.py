@@ -21,7 +21,9 @@ def test_discover_skills_md(tmp_path):
     """_discover_skills finds SKILL.md agent skills."""
     skills_dir = tmp_path / ".gemini" / "skills" / "review"
     skills_dir.mkdir(parents=True)
-    (skills_dir / "SKILL.md").write_text('---\nname: review\ndescription: "Review code changes"\n---\nReview instructions here.')
+    (skills_dir / "SKILL.md").write_text(
+        '---\nname: review\ndescription: "Review code changes"\n---\nReview instructions here.'
+    )
 
     skills = _discover_skills(str(tmp_path))
     names = {s.name for s in skills}

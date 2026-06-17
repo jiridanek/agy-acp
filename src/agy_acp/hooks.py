@@ -1,13 +1,6 @@
 from uuid import uuid4
 
 import google.antigravity as agy
-from google.antigravity.hooks.hooks import (
-    HookContext,
-    PostToolCallHook,
-    PreToolCallDecideHook,
-)
-from google.antigravity.types import HookResult
-
 from acp import text_block
 from acp.contrib.permissions import PermissionBroker
 from acp.helpers import tool_content, tool_diff_content, tool_terminal_ref
@@ -17,6 +10,12 @@ from acp.schema import (
     ToolCallLocation,
     ToolCallUpdate,
 )
+from google.antigravity.hooks.hooks import (
+    HookContext,
+    PostToolCallHook,
+    PreToolCallDecideHook,
+)
+from google.antigravity.types import HookResult
 
 from agy_acp.config import _ALWAYS_SAFE_TOOLS, _FILE_WRITE_TOOLS
 from agy_acp.log import log
@@ -33,9 +32,7 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
     async def run(self, context: HookContext, data: agy.types.ToolCall) -> HookResult:
         session_id = current_session_id.get(None) or self.echo_agent._active_session_id
         if not session_id:
-            log.warning(
-                "No session ID found in context for tool call %s — denying", data.name
-            )
+            log.warning("No session ID found in context for tool call %s — denying", data.name)
             return HookResult(allow=False, message="No active session context")
 
         tool_call_id = data.id or uuid4().hex
@@ -54,17 +51,13 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
         log.debug("Intercepted tool call %s in session %s (mode=%s)", data.name, session_id, mode)
 
         if tool_name in _ALWAYS_SAFE_TOOLS:
-            await self._send_start(
-                session_id, tool_call_id, title, kind, locations, data.args
-            )
+            await self._send_start(session_id, tool_call_id, title, kind, locations, data.args)
             return HookResult(allow=True)
 
         is_file_write = tool_name in _FILE_WRITE_TOOLS
 
         if mode == "bypass":
-            await self._send_start(
-                session_id, tool_call_id, title, kind, locations, data.args
-            )
+            await self._send_start(session_id, tool_call_id, title, kind, locations, data.args)
             return HookResult(allow=True)
 
         if mode == "plan" and is_file_write:
@@ -76,13 +69,14 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
         if mode == "dont_ask":
             return HookResult(
                 allow=False,
-                message="This tool requires permission but the current mode denies unapproved tools. Suggest the user switch to Agent or Bypass mode.",
+                message=(
+                    "This tool requires permission but the current mode denies unapproved tools."
+                    " Suggest the user switch to Agent or Bypass mode."
+                ),
             )
 
         if mode == "accept_edits" and is_file_write:
-            await self._send_start(
-                session_id, tool_call_id, title, kind, locations, data.args
-            )
+            await self._send_start(session_id, tool_call_id, title, kind, locations, data.args)
             return HookResult(allow=True)
 
         async def requester(
@@ -145,13 +139,9 @@ class MyPreToolCallDecideHook(PreToolCallDecideHook):
                 )
         except Exception as e:
             log.exception("Error requesting permission via broker")
-            return HookResult(
-                allow=False, message=f"Internal permission broker error: {e}"
-            )
+            return HookResult(allow=False, message=f"Internal permission broker error: {e}")
 
-    async def _send_start(
-        self, session_id, tool_call_id, title, kind, locations, raw_input
-    ):
+    async def _send_start(self, session_id, tool_call_id, title, kind, locations, raw_input):
         start = self.echo_agent._tracker.start(
             tool_call_id,
             title=title,
@@ -207,11 +197,7 @@ class MyPostToolCallHook(PostToolCallHook):
             pass
 
         try:
-            progress = self.echo_agent._tracker.progress(
-                tc_id, status=status, content=content, raw_output=raw_output
-            )
-            await self.echo_agent._conn.session_update(
-                session_id=session_id, update=progress
-            )
+            progress = self.echo_agent._tracker.progress(tc_id, status=status, content=content, raw_output=raw_output)
+            await self.echo_agent._conn.session_update(session_id=session_id, update=progress)
         except KeyError:
             log.debug("post hook: unknown tracker id %s", tc_id)

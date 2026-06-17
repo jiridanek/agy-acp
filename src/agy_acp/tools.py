@@ -10,9 +10,7 @@ def _build_mode_state(mode_id: str) -> SessionModeState:
     return SessionModeState(current_mode_id=mode_id, available_modes=_AVAILABLE_MODES)
 
 
-def _get_token_rates(
-    model_id: str, total_context_tokens: int
-) -> tuple[float, float] | None:
+def _get_token_rates(model_id: str, total_context_tokens: int) -> tuple[float, float] | None:
     pricing = _MODEL_PRICING.get(model_id)
     if not pricing:
         return None

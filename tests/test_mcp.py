@@ -26,9 +26,7 @@ def test_convert_mcp_stdio_server():
     from acp.schema import McpServerStdio
     from google.antigravity.types import McpStdioServer
 
-    server = McpServerStdio(
-        name="test-stdio", command="node", args=["server.js"], env=[]
-    )
+    server = McpServerStdio(name="test-stdio", command="node", args=["server.js"], env=[])
     result = _convert_mcp_server(server)
     assert isinstance(result, McpStdioServer)
     assert result.command == "node"

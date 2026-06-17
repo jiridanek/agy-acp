@@ -19,6 +19,7 @@ dev = [
     "fastmcp>=3.4.2",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
+    "ruff>=0.12",
 ]
 
 [tool.pytest.ini_options]
@@ -29,3 +30,10 @@ filterwarnings = [
     # https://github.com/googleapis/python-genai/issues/1640
     "ignore:'_UnionGenericAlias' is deprecated:DeprecationWarning",
 ]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
