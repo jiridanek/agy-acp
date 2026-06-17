@@ -283,3 +283,12 @@ Conversation history is saved as trajectory files in `~/.agy-acp/trajectories/` 
 | `hellp_test.py` | Test suite (offline + live tests) |
 | `fake_server.py` | Fake agent server for subprocess integration tests |
 | `hello.py` | Standalone Antigravity SDK example (no ACP) |
+
+## License
+
+Licensed under either of
+
+- [Apache License, Version 2.0](LICENSE-APACHE)
+- [MIT License](LICENSE-MIT)
+
+at your option.
