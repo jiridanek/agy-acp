@@ -6,6 +6,7 @@ When making code changes, update the relevant documentation:
 
 - **README.md** — Keep setup instructions, feature list, architecture diagram, and file table current
 - **DEV.md** — Internal dev notes and decisions (don't restructure, append new notes)
+- **src/agy_acp/AGENTS.md** — Package architecture: module map, import graph, design decisions. Update when adding, removing, renaming, or changing the responsibility of a module
 
 If you add a new slash command, model, config option, or capability, make sure it's reflected in README.md.
 
