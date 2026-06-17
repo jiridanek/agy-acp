@@ -65,8 +65,12 @@ Adding a new module: place it in this graph without creating cycles. If module A
 
 ## Test Layout
 
-Tests live in `tests/` (pytest auto-discovers via `testpaths` in pyproject.toml):
-- `test_agent.py` — all EchoAgent tests (to be split further as the suite grows)
-- `test_logging.py` — SecretMaskingFilter tests
-- `conftest.py` — adds project root to sys.path for `import hellp` backward compat
+Tests live in `tests/` (pytest auto-discovers via `testpaths` in pyproject.toml), split per module:
+- `conftest.py` — shared fixtures: FakeAgent, FakeConfig, _TEST_CLIENT_CAPS
+- `test_agent.py` — EchoAgent: sessions, config, commands, cost, tool execution, live/subprocess tests
+- `test_hooks.py` — MyPreToolCallDecideHook/MyPostToolCallHook: dispatch, modes, permissions
+- `test_tool_ui.py` — _tool_title, _permission_description
+- `test_mcp.py` — MCP server conversion
+- `test_skills.py` — skill discovery
+- `test_logging.py` — SecretMaskingFilter
 - `evals/` — evaluation data fixtures
